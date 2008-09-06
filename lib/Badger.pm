@@ -9,7 +9,7 @@ use Badger::Class
     import  => 'class',
     words   => 'HUB';
 
-our $VERSION = 0.01;
+our $VERSION = '0.02';
 our $HUB     = 'Badger::Hub';
 our $AUTOLOAD;
 
@@ -71,19 +71,20 @@ Badger - Perl Application Programming Toolkit
 
 =head1 WARNING
 
-This is the first version of the Badger Toolkit.  It should be treated as
+This is the second version of the Badger Toolkit. It should treated as
 I<alpha> quality code.
 
 The code as it stands is almost certainly packed full of B<FAIL> and should be
 handled as if it's likely to explode at any second. Everything is subject to
 change without notice. B<Mr T pities the fool that attempts to builds a
-production system based on Badger version 0.01!>
+production system based on Badger version 0.02>
 
-That said, the code is I<believed> to be reliable. Badger is based on code and
-concepts that have been used in production systems for a number of years. Most
-of the API is well-defined and unlikely to change significantly in future
-versions. However, we're not ruling anything out given that the Badger has
-only just been incarnated in his current form.  
+That said, the code is I<believed> to be reliable and the release of version
+0.01 didn't throw up any major problems. Badger is based on code and concepts
+that have been used in production systems for a number of years. Most of the
+API is well-defined and unlikely to change significantly in future versions.
+However, we're not ruling anything out given that the Badger has only just
+been incarnated in his current form.
 
 Despite the fact that Badger is built on (mostly) tried and tested code, the
 entire code base has been rebuilt from the ground up, shuffled about, jiggled
@@ -160,13 +161,13 @@ metaprogramming modules tailored to your particular needs.
 Base classes and mixin modules provide functionality for both I<hard errors>
 in the form of exception-based error handling and I<soft errors> for declining
 requests (e.g. to fetch a resource that doesn't exist) that aren't failures
-but require special handling. Methods for debugging and raising general
-warnings are also provided. Generic hooks are provided for receiving
-notification of, or implementing custom handling for errors, warnings and
-declines. Running alongside this is a generic message formatting system that
-allow you to define all error/warning/debug messages in one place where they
-can easily be localised (e.g. to a different spoken language) or customised
-(e.g. to generate HTML format instead of plain text).
+but require special handling. Methods for debugging (see L<Badger::Debug>) and
+raising general warnings are also provided. Generic hooks are provided for
+receiving notification of, or implementing custom handling for errors,
+warnings and declines. Running alongside this is a generic message formatting
+system that allow you to define all error/warning/debug messages in one place
+where they can easily be localised (e.g. to a different spoken language) or
+customised (e.g. to generate HTML format instead of plain text).
 
 =item Symbol Exporter
 
@@ -179,12 +180,13 @@ import hooks.
 
 =item Standard utilities and constants.
 
-The L<Badger::Utils> module provides a number of simple utility functions of
-its own as well as acting as a delegate to various other standard utility
-modules (e.g. L<Scalar::Util>, L<Digest::MD5>, etc). L<Badger::Constants>
-defines various constants used by the Badger modules and also of general
-use.  Both these modules are designed to be subclassed so that you can 
-create your own collections of utility functions, constants, and so on.
+The L<Badger::Utils> module provides a number of simple utility functions. It
+also acts as a delegate to various other standard utility modules
+(L<Scalar::Util>, L<List::Util>, L<List::MoreUtils>, L<Hash::Util> and
+L<Digest::MD5>). L<Badger::Constants> defines various constants used by the
+Badger modules and also of general use. Both these modules are designed to be
+subclassed so that you can create your own collections of utility functions,
+constants, and so on.
 
 =item Filesystem modules
 
@@ -215,7 +217,7 @@ sequences.
 
 =item Free
 
-Badger is Open Source and "free" in both "free beer" and "free speech" senese
+Badger is Open Source and "free" in both "free beer" and "free speech" senses
 of the word. It's 100% pure Perl and has no external dependencies on any
 modules that aren't part of the Perl core. Badger is the base platform for
 version 3 of the Template Toolkit (coming RSN) and has portability and ease of
@@ -225,6 +227,12 @@ Badger core will always be dependency-free to keep it upload-to-your-ISP
 friendly.
 
 =back
+
+=head2 What's New?
+
+Version 0.02 features some improvements to L<Badger::Debug> and
+L<Badger::Utils> as well as various additions and updates to the
+documentation.
 
 =head2 Background
 
@@ -323,15 +331,32 @@ Here's a teaser:
 
 Another handy base class (itself derived from L<Badger::Base>) which allows
 you to create prototype objects. To cut a long story short, it means you can
-call class methods and have them get automatigcally applied to a default
+call class methods and have them get automagically applied to a default
 object (the prototype). It's a little like a singleton, but slightly more
 flexible.
+
+    Badger::Example->method;        # delegated to prototype object
+
+The benefit is that you don't have to worry about providing support in
+your methods for both class and object method calls.  Simply call the 
+C<prototype()> method and it'll make sure that any class method calls
+are "upgraded" to object calls.
+
+    sub example {
+        my $self = shift->prototype;
+        # $self is *always* an object now
+    }
 
 =head2 Badger::Mixin
 
 Yet another handy base class, this time for creating mixin objects that can 
 be mixed into other objects, rather like a generous handful of nuts and 
 berries being mixed into an ice cream sundae.  Yummy!  Is it tea-time yet?
+
+    package My::Sundae;
+    
+    use Badger::Class
+        mixin => 'My::Nuts My::Berries';
 
 =head2 Badger::Class
 
@@ -446,12 +471,17 @@ provides a base class from which you can derive your own constants modules.
 
 =head2 Badger::Debug
 
-This provides some debugging methods that you can mix into your own modules
-as and when required.  And hey, we can do colour!  woot!
+This provides some debugging methods that you can mix into your own modules as
+and when required. It supports both compile time and run time debugging
+statements ("compile time" in the sense that we can eliminate debugging
+statements at compile time so that they don't have any performance impact,
+"run time" statements aren't eliminated but can be turned on or off by a
+flag). And hey, we can do colour! woot! Thirty Love!
 
 =head2 Badger::Exception
 
 An exception object used by the Badger's inbuilt error handling system.
+Try.  Throw.  Catch.  Forty Love!
 
 =head2 Badger::Filesystem
 
@@ -499,8 +529,12 @@ the Rainbow someone left lying around in our back garden!
 Rather like the kitchen drawer where you put all the things that don't have a
 place of their own, the L<Badger::Utils> module provides a resting place for
 all the miscellaneous bits and pieces. It defines some basic utility functions
-and can act as a base class if and when you need to define your own custom
-utility collection modules. You are *so* lucky. 
+of its own and also acts as a delegate in case you need any of the functions
+from L<Scalar::Util>, L<List::Util>, L<List::MoreUtils>, L<Hash::Util> or
+L<Digest::MD5>. It can also act as a base class if and when you need to define
+your own custom utility collection modules. You are *so* lucky.
+
+Game, set and match: Mr Badger.
 
 =head1 METHODS
 
@@ -524,6 +558,11 @@ return a L<Badger::Codec> object.
 Delegates to the L<Badger::Hub> L<codec()|Badger::Hub/codec()> method to 
 return a L<Badger::Config> object.  This is still experimental.
 
+=head1 TODO
+
+This module doesn't actually do much at the moment.  It's just the front
+door.  Or the frame where the front door is supposed to go.
+
 =head1 AUTHOR
 
 Andy Wardley  E<lt>abw@wardley.orgE<gt>
@@ -537,7 +576,7 @@ modify it under the same terms as Perl itself.
 
 =head1 SEE ALSO
 
-L<badgerpower.com>
+L<http://badgerpower.com/>
 
 =cut
 
