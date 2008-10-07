@@ -181,7 +181,7 @@ package main;
 
 $dbgmsg = '';
 My::Debugger2->hello;
-is( $dbgmsg, '[My::Debugger2 line 23] Hello world', 'got debug message' );
+is( $dbgmsg, "[My::Debugger2 line 23] Hello world\n", 'got debug message' );
 
 #-----------------------------------------------------------------------
 # test debug load option
@@ -202,6 +202,13 @@ My::Debugger3->debugging(0);
 
 is( My::Debugger3->debug_static_status, 'on', 'debugger3 static debugging is still on' );
 is( My::Debugger3->debug_dynamic_status, 'off', 'debugger3 dynamic debugging is now off' );
+
+
+#-----------------------------------------------------------------------
+# changed Badger::Class to delegate debug to Badger::Debug
+#-----------------------------------------------------------------------
+
+Badger::Debug->export('foo', '$DEBUG' => 1);
 
 exit();
 

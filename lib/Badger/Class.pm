@@ -15,8 +15,10 @@ package Badger::Class;
 
 use strict;
 use warnings;
+use Carp;
 use base 'Badger::Exporter';
-use Badger::Constants 'DELIMITER SCALAR ARRAY HASH CODE PKG REFS ONCE';
+use Badger::Constants 
+    'DELIMITER SCALAR ARRAY HASH CODE PKG REFS ONCE TRUE FALSE';
 use constant {
     FILESYSTEM => 'Badger::Filesystem',
     CONSTANTS  => 'Badger::Constants',
@@ -24,16 +26,17 @@ use constant {
     MIXIN      => 'Badger::Mixin',
     CODECS     => 'Badger::Codecs',
     UTILS      => 'Badger::Utils',
+    DEBUGGER   => 'Badger::Debug',
+    DEFAULTS   => 'Badger::Class::Defaults',
+    ALIASES    => 'Badger::Class::Aliases',
     LOADED     => 'BADGER_LOADED',
     MESSAGES   => 'MESSAGES',
     VERSION    => 'VERSION',
     MIXINS     => 'MIXINS',
     THROWS     => 'THROWS',
-    DEBUG      => 'DEBUG',
     ISA        => 'ISA',
     base_id    => 'Badger',
 };
-use Carp;
 use overload 
     '""' => 'name',
     fallback => 1;
@@ -42,14 +45,16 @@ our $VERSION    = 0.01;
 our $DEBUG      = 0 unless defined $DEBUG;
 our $LOADED     = { }; 
 our @HOOKS      = qw( 
-    base uber mixin mixins version debug constant constants words vars exports 
-    throws messages utils codec codecs filesystem hooks
-    methods slots accessors mutators get_methods set_methods
+    base uber mixin mixins version constant constants words vars defaults
+    aliases exports throws messages utils codec codecs filesystem hooks
+    methods slots accessors mutators get_methods set_methods overload 
+    as_text is_true
 );
 our $HOOKS = { 
     map { $_ => $_ }
     @HOOKS
 };
+
 
 *get_methods = \&accessors;
 *set_methods = \&mutators;
@@ -63,7 +68,7 @@ our $HOOKS = {
     # lookup table mapping package names to Badger::Class objects
     my $CLASSES = { };
 
-    # class/package name
+    # class/package name - define this up-front so we can use it below
     sub CLASS {
         my $class = @_ ? shift : (caller())[0];
         ref $class || $class;
@@ -100,7 +105,9 @@ our $HOOKS = {
             $class_sub->($class)->heritage;
         };
 
-        no strict 'refs';
+        no strict REFS;
+        no warnings 'redefine';
+#        *{ $pkg.PKG.'CLASS'     } = sub () { $pkg };
         *{ $pkg.PKG.'class'     } = $class_sub;
         *{ $pkg.PKG.'classes'   } = $classes_sub;
         *{ $pkg.PKG.'_autoload' } = \&_autoload;
@@ -110,7 +117,6 @@ our $HOOKS = {
 
     # call the UBER method to generate class() and classes() for this module
     __PACKAGE__->UBER;
-
 }
 
 
@@ -120,6 +126,7 @@ our $HOOKS = {
 
 # define custom hooks for load options
 CLASS->export_hooks({
+    debug    => \&_debug_hook,
     map { $_ => \&_export_hook } 
     @HOOKS
 });
@@ -153,6 +160,17 @@ sub export {
     ${$package.PKG.LOADED} ||= 1;
     $class->SUPER::export($package, @args);
 }
+
+sub _debug_hook {
+    my ($class, $target, $key, $symbols) = @_;
+    croak "You didn't specify a value for the '$key' load option."
+        unless @$symbols;
+    my $debug = shift @$symbols;
+    $debug = { default => $debug }
+        unless ref $debug eq HASH;
+    _autoload($class->DEBUGGER)->export($target, %$debug);
+}
+
 
 
 #-----------------------------------------------------------------------
@@ -474,66 +492,6 @@ sub version {
     return $self;
 }
 
-sub debug {
-    my ($self, $debug) = @_;
-    my $pkg = $self->{ name };
-    no strict REFS;
-
-    # define a new debugging() method in the target class (if one doesn't
-    # already exist) which calls the debugging() method on it's class object
-    unless (defined *{ $pkg.PKG.'debugging' }) {
-        _debug("Defining $pkg debugging() method\n") if $DEBUG;
-        *{ $pkg.PKG.'debugging' } = sub { 
-            class(shift)->debugging(@_) 
-        };
-    }
-
-    # On this one occasion, we won't force the $DEBUG value to be set
-    # to $debug if it's already been pre-defined to a value.  This 
-    # emulates the idiom: our $DEBUG = $debug unless defined $DEBUG;
-    # so that we can set $DEBUG flags *before* loading a module (which
-    # might happen on demand)
-
-
-    $debug = ${ $pkg.PKG.DEBUG }
-        if defined ${ $pkg.PKG.DEBUG };
-        
-    _debug("debug() Setting $pkg \$DEBUG to $debug\n") if $DEBUG;
-    *{ $pkg.PKG.DEBUG } = \$debug;
-
-    return $self;
-}
-
-sub debugging {
-    my $self = shift;
-    my $pkg = $self->{ name };
-    no strict REFS;
-
-    # return current $DEBUG value when called without args
-    return ${ $pkg.PKG.DEBUG } || 0
-        unless @_;
-    
-    # set new debug value when called with an argument
-    my $debug = shift;
-    $debug = 0 if $debug =~ /^off$/i;
-
-    # TODO: consider setting different parts of the flag, like TT2, 
-
-    _debug("debugging() Setting $pkg debug to $debug\n") if $DEBUG;
-    
-    if (defined ${ $pkg.PKG.DEBUG }) {
-        # update existing variable
-        ${ $pkg.PKG.DEBUG } = $debug;
-    }
-    else {
-        # define new variable, poking it into the symbol table using
-        # *{...} rather than ${...} so that it's visible at compile time,
-        # thus preventing any "Variable $DEBUG not defined errors
-        *{ $pkg.PKG.DEBUG } = \$debug;
-    }
-    return $debug;
-}
-
 sub constants {
     my $self = shift;
     my $constants = @_ == 1 ? shift : { @_ };
@@ -642,7 +600,23 @@ sub vars {
     }
     return $self;
 }
-    
+
+sub defaults {
+    my $self = shift;
+    _autoload($self->DEFAULTS)->export(
+        $self->{ name }, @_
+    );
+    return $self;
+}
+
+sub aliases {
+    my $self = shift;
+    _autoload($self->ALIASES)->export(
+        $self->{ name }, @_
+    );
+    return $self;
+}
+
 sub exports {
     my $self = shift;
     my $pkg  = $self->{ name };
@@ -810,6 +784,33 @@ sub mutators {
     return $self;
 }
 
+sub overload {
+    my $self = shift;
+    my $args = @_ && ref $_[0] eq HASH ? shift : { @_ };
+    _debug("overload on $self->{name} : { ", join(', ', %$args), " }\n") if $DEBUG;
+    overload::OVERLOAD($self->{name}, %$args);
+    return $self;
+}
+
+sub as_text {
+    my ($self, $method) = @_;
+    $self->overload( '""' => $method, fallback => 1 );
+}
+
+sub is_true {
+    my ($self, $arg) = @_;
+    my $method = 
+        $arg eq FALSE ? \&FALSE :      # allow 0/1 as shortcut 
+        $arg eq TRUE  ? \&TRUE  :
+        $arg;
+    $self->overload( bool => $method, fallback => 1 );
+}
+    
+
+#-----------------------------------------------------------------------
+# misc methods
+#-----------------------------------------------------------------------
+
 sub filesystem {
     my $self = shift;
     my $syms = @_ == 1 ? shift : { @_ };
@@ -957,6 +958,12 @@ Badger::Class - class metaprogramming module
         words       => 'yes no quit',   # define constant words
         accessors   => 'foo bar',       # create accessor methods
         mutators    => 'wiz bang',      # create mutator methods
+        as_text     => 'text',          # auto-stringify via text() method
+        is_true     => 1,               # overload boolean operator
+        overload    => {                # overload other operators
+            '>'     => 'more_than',
+            '<'     => 'less_than',
+        },
         vars        => {
             '$FOO'  => 'Hello World',   # defines $FOO package var
             '@BAR'  => [10,20,30],      # defines @BAR
@@ -1849,6 +1856,74 @@ It also allows you to provide values for variables, like so:
 
 See the L<vars()> method for further information.
 
+=head2 defaults
+
+This is similar to the L<vars> hook in allowing you to define one or more
+default values for scalar package variables. If a package variable is already
+defined then it is not changed. It also defines the C<$DEFAULTS> package
+variable (if not already defined) which contains a reference to the hash array
+of default values specified.
+
+    use Badger::Class
+        defaults => {
+            FOO => 10,
+            BAR => 20,
+        };
+
+The above example is equivalent to the following code:
+
+    our $FOO = 10 
+        unless defined $FOO;
+    our $BAR = 20 
+        unless defined $BAR;
+    our $DEFAULTS = { FOO => 10, BAR => 20 }
+        unless defined $DEFAULTS;
+
+It also imports a L<init_defaults()> method into your class that you can
+call from your L<init()> method to initialise the object using named
+parameters from the C<$config> hash or the default values defined in 
+package variables.
+
+    sub init {
+        my ($self, $config) = @_;
+        $self->init_defaults($config);
+        return $self;
+    }
+
+This functionality is implemented by the L<Badger::Class::Defaults> 
+module.  It should be considered experimental and subject to change.
+
+=head2 aliases
+
+This hook can be used to define aliases for the configuration parameters 
+for your object class.  It stores them in a C<$ALIASES> package variable
+and exports an C<init_aliases()> method which you can call from your own
+C<init()> method.  This method will look for any aliases in the configuration
+and update the hash to contain the definitive name for the item.
+
+    use Badger::Class
+        base      => 'Badger::Base',
+        accessors => 'name user pass',
+        aliases   => {
+            name  => 'database',
+            user  => 'username',
+            pass  => 'password',
+        };
+
+    sub init {
+        my ($self, $config) = @_;
+        
+        $self->init_aliases($config);
+        
+        for (qw( name user pass )) {
+            $self->{ $_ } = $config->{ $_ };
+        }
+        return $self;
+    }
+
+This functionality is implemented by the L<Badger::Class::Aliases> 
+module.  It should be considered experimental and subject to change.
+
 =head2 exports 
 
 This allows you to declare the symbols that your module can export.
@@ -2031,6 +2106,52 @@ You can use C<set_methods> as an alias for C<mutators> if you prefer.
         set_methods => 'foo bar';
 
 See the L<mutators()> method for further details.
+
+=head2 overload
+
+This can be used as a shortcut to the C<overload> module to overload
+operators for your class.
+
+    use Badger::Class
+        overload => {
+            '""'     => \&text,
+            bool     => sub { 1 },
+            fallback => 1,
+        };
+
+=head2 as_text
+
+This is a shortcut to the C<overload> module. It can be used to define an
+auto-stringification method that generates a text representation of your
+object.  The method can be specified by name or as a code reference.
+
+    use Badger::Class
+        as_text => 'your_text_method';
+        
+    sub your_text_method {
+        my $self = shift;
+        # your code
+    }
+
+=head2 is_true
+
+This is a shortcut to the C<overload> module. It can be used to define an
+method that is used for boolean truth comparisons. This can be useful in
+conjunction with the L<as_text> hook to ensure that an object reference always
+evaluates true, even if the auto-stringification method returns a string that
+Perl considers false (e.g. an empty string or C<0>).
+
+    use Badger::Class
+        as_text => 'your_text_method',
+        is_true => sub { 1 };           # always true
+
+The method can be specified as a method name or code reference.  For simple
+false/true values you can also specify C<0> or C<1> and leave it up to 
+C<Badger::Class> to alias it to an appropriate subroutine.
+
+    use Badger::Class
+        as_text => 'your_text_method',
+        is_true => 1;                   # always true
 
 =head2 filesystem
 
@@ -2585,6 +2706,16 @@ item list.
             '@FOO' => 42,                   #   our @FOO = (42)
         };
 
+=head2 default($vars)
+
+This method implements the functionality for the L<default> export hook. At
+present it only works with scalar package variables.
+
+    use Badger::Class
+        default => {                        # Equivalent code:
+            ANSWER => 42,                   #   our $ANSWER = 42 
+        };                                  #       unless defined $ANSWER
+
 =head2 exports($symbols)
 
 This method is used to declare what symbols the module can export.  It
@@ -2803,6 +2934,21 @@ to update the slot value.
 
     $bus->size('large');
 
+=head2 overload(\%operators)
+
+This method provides a simple shortcut to the C<overload> core module to
+implement the L<overload> import hook.
+
+=head2 as_text($method)
+
+This method provides a simple wrapper around the L<overload()> method to
+implement the L<as_text> import hook.
+
+=head2 is_true($method)
+
+This method provides a simple wrapper around the L<overload()> method to
+implement the L<is_true> import hook.
+
 =head2 filesystem(@symbols)
 
 This method can be used to load symbols from L<Badger::Filesystem>.  It
@@ -2887,12 +3033,6 @@ C<Badger::Utils>
 These constants are I<really> internal. You really don't need to know about
 them. In fact, even I<I> don't need to know about them. I'm only documenting
 then to keep L<Pod::Coverage> quiet.
-
-=head2 DEBUG
-
-This is defined to contain the word C<DEBUG> (see, I said you didn't
-need to know about this).  It's the name of the C<$DEBUG> variable that
-the L<debug()> method hooks into.
 
 =head2 VERSION
 

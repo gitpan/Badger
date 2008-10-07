@@ -9,6 +9,8 @@ use Badger::Class
 use Badger::Rainbow 
     'ANSI_colours ANSI_escape';
 
+eval "use Algorithm::Diff qw( diff )";
+our $CAN_DIFF   = $@ ? 0 : 1;
 our $ESCAPES    = qr/\e\[(.*?)m/;      # remove ANSI escapes
 our $REASON     = 'No reason given';
 our $MESSAGES   = {
@@ -30,11 +32,14 @@ our $MESSAGES   = {
     fail        => "# FAIL: %d tests failed\n",
     mess        => "# FAIL: Inconsistent test results\n",
     summary     => "#       %d/%d tests run, %d passed, %d failed, %d skipped\n",
+    hunk        => "# -- diffs %s of %s --\n",
+    delta       => "#    %s %3d %s\n",
+    
 };
 our $SCHEME     = {
     green       => 'ok pass',
     red         => 'not_ok too_few too_many fail mess',
-    cyan        => 'skip_one skip_all',
+    cyan        => 'skip_one skip_all hunk delta',
     yellow      => 'plan not_eq not_ne not_like not_unlike summary',
 };
 
@@ -145,13 +150,9 @@ sub is ($$$;$) {
         return $self->pass($msg);
     }
     else {
-        for ($expect, $result) {
-            s/\n/\n          |/g;
-        }
-        return $self->fail($msg, $self->message( not_eq => $expect, $result ));
+        return $self->fail($msg, $self->different($expect, $result));
     }
 }
-
 sub isnt ($$$;$) {
     my $self = shift->prototype;
     my ($result, $expect, $msg) = @_;
@@ -275,6 +276,31 @@ sub test_name ($) {
     my $self = shift->prototype;
     my ($pkg, $file, $line) = caller(1);
     $self->message( name => $self->{ count }, $file, $line );
+}
+
+sub different {
+    my ($self, $expect, $result) = @_;
+    my ($pad_exp, $pad_res) = ($expect, $result);
+    for ($pad_exp, $pad_res) {
+        s/\n/\n#         |/g;
+    }
+    my $msg = $self->message( not_eq => $pad_exp, $pad_res );
+
+    return $msg 
+        unless $CAN_DIFF;
+
+    my $diffs = diff( map { [ split(/\n/) ] } $expect, $result );
+    my $n     = 0;
+    my $m     = scalar @$diffs;
+    
+    foreach my $hunk (@$diffs) {
+        $msg .= $self->message( hunk => ++$n, $m );
+        foreach my $delta (@$hunk) {
+            $msg .= $self->message( delta => @$delta );
+        }
+#        $msg .= "\n";
+    }
+    return $msg;
 }
 
 sub colour {
@@ -505,6 +531,14 @@ defined in the C<$MESSAGES> package variable.
 
 Use to generate a name for a test if one isn't explicitly provided.
 
+=head2 different($expect,$result)
+
+This method is call when a test find a result that doesn't match the 
+expected value.  If C<Algorithm::Diff> is installed on your machine, it
+will generate a message showing how the output and expected values differ.
+
+Otherwise it will generate a regular message reporting the mismatch.
+    
 =head1 AUTHOR
 
 Andy Wardley L<http://wardley.org/>

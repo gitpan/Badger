@@ -23,7 +23,7 @@ use Badger::Class
     import    => 'class',
     exports   => {
         tags  => {
-            debug => 'debugging debug debug_up debug_caller',
+            debug => 'debugging debug debug_up debug_caller debug_args',
             dump  => 'dump dump_data dump_data_inline 
                       dump_hash dump_list dump_text'
         },
@@ -36,7 +36,6 @@ use Badger::Class
             '$DEBUG' => [\&_export_debug_variable, 1],
         },
     };
-
     
 our $PAD       = '    ';
 our $MAX_TEXT  = 48;
@@ -129,6 +128,7 @@ sub debug {
     my $format = $FORMAT;
     my ($pkg, $file, $line) = caller($CALLER_UP);
     $class .= " ($pkg)" unless $class eq $pkg;
+    $msg .= "\n" unless $msg =~ /\n$/;
     my $data = {
         msg   => $msg,
         class => $class,
@@ -154,6 +154,15 @@ sub debug_caller {
     $self->debug($msg);
 }
 
+sub debug_args {
+    my $self = shift;
+    $self->debug_up( 
+        2, "args: ",  
+        join(', ', map { $self->dump_data_inline($_) } @_),
+        "\n"
+    );
+}
+
 sub debug_modules {
     my $self    = shift;
     my $modules = @_ == 1 ? shift : [ @_ ];
@@ -163,7 +172,7 @@ sub debug_modules {
         unless ref $modules eq ARRAY;
         
     # TODO: handle other refs?
-    
+
     foreach my $pkg (@$modules) {
         no strict REFS;
         *{ $pkg.PKG.DEBUG } = \$debug;
@@ -656,8 +665,8 @@ of this in use.
 
 =head2 :debug
 
-Imports all of the L<debug()>, L<debugging()>, L<debug_up()> and 
-L<debug_caller()> methods.
+Imports all of the L<debug()>, L<debugging()>, L<debug_up()>, 
+L<debug_caller()> and L<debug_args()> methods.
 
 =head2 :dump
 
@@ -718,6 +727,15 @@ Prints debugging information about the current caller.
     sub wibble {
         my $self = shift;
         $self->debug_caller;
+    }
+
+=head2 debug_args()
+
+Prints debugging information about the arguments passed.
+
+    sub wibble {
+        my $self = shift;
+        $self->debug_args(@_);
     }
 
 =head2 debugging($flag)

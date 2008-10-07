@@ -4,6 +4,46 @@ Badger::Changes - Summary of changes in the Badger toolkit
 
 =head1 CHANGES
 
+=head2 Version 0.03
+
+Added delegate loaders to L<Badger>.  This provides some semantic sugar
+for loading a bunch of different C<Badger::*> modules in one go.
+
+    use Badger
+        Filesystem  => 'FS $Bin',
+        Codecs      => 'storable base64',
+        Debug       => {
+            modules => 'My::Module',
+        };
+
+Added L<different()|Badger::Test::Manager/different()> to 
+L<Badger::Test::Manager>.
+
+Added L<textlike()|Badger::Utils/textlike()> to L<Badger::Utils>
+
+Added the L<overload|Badger::Class/overload>
+L<as_text|Badger::Class/as_text> and 
+L<is_true|Badger::Class/is_true> import hooks and related method to
+L<Badger::Class>.  These delegate to the C<overload> module.
+
+Added the L<print|Badger::Filesystem::File/print()> method to 
+L<Badger::Filesystem::File>.
+
+Added support for 
+L<dynamic root directories|Badger::Filesystem::Virtual/"virtual root directories">
+to L<Badger::Filesystem::Virtual>.
+
+Added the L<defaults|Badger::Class/defaults> and L<aliases|Badger::Class/aliases>
+hooks to L<Badger::Class>, implemented by L<Badger::Class::Defaults> and 
+L<Badger::Class::Aliases>, respectively.  There are still experimental.
+
+Fixed up some stat handling in L<Badger::Filesystem> to help with subclassing
+in L<Badger::Filesystem::Virtual>
+
+Mr T pities the fool that attempts to builds a production system based on
+Badger version 0.03 without first evaluating it carefully and reading the
+documentation.
+
 =head2 Version 0.02
 
 L<Badger::Class> got the L<vars|Badger::Class/vars()> method and hook

@@ -15,10 +15,10 @@ use strict;
 use warnings;
 
 use lib qw( t/core/lib ./lib ../lib ../../lib );
-use Badger::Utils 'UTILS blessed xprintf reftype';
+use Badger::Utils 'UTILS blessed xprintf reftype textlike plural';
 use Badger::Debug;
 use Badger::Test 
-    tests => 29,
+    tests => 33,
     debug => 'Badger::Utils',
     args  => \@ARGV;
 
@@ -60,12 +60,19 @@ is( params(%$hash)->{ a }, 10, 'params merged named param list' );
 
 
 package Selfish;
-use base 'Badger::Base';
-use Badger::Utils 'self_params';
+
+use Badger::Class
+    base    => 'Badger::Base',
+    as_text => 'text',                  # for testing textlike()
+    utils   => 'self_params';
 
 sub test1 {
     my ($self, $params) = self_params(@_);
     return ($self, $params);
+}
+
+sub text {                              # for testing textlike()
+    return 'Hello World';
 }
 
 package main;
@@ -77,6 +84,16 @@ is( $p, $hash, 'self_params returns params' );
 is( $s, $selfish, 'self_params returns self again' );
 is( $p->{a}, 10, 'self_params returns params again' );
 
+
+#-----------------------------------------------------------------------
+# test textlike
+#-----------------------------------------------------------------------
+
+ok( textlike 'hello', 'string is textlike' );
+ok( textlike $selfish, 'selfish object is textlike' );
+ok( ! textlike $obj, 'object is not textlike' );
+ok( ! textlike [10], 'list is not textlike' );
+ok( ! textlike sub { 'foo' }, 'sub is not textlike' );
 
 
 #-----------------------------------------------------------------------
@@ -117,7 +134,7 @@ is( xprintf('<1> is <2:4.3f>', e => 2.71828),
 # List::MoreUtils and Hash::Util.
 #-----------------------------------------------------------------------
 
-use Badger::Utils 'reftype looks_like_number first max any all true lock_hash';
+use Badger::Utils 'reftype looks_like_number first max lock_hash';
 
 my $object = bless [ ], 'Badger::Test::Object';
 is( reftype $object, 'ARRAY', 'reftype imported' );
@@ -131,6 +148,25 @@ is( $first, 33, 'list first imported' );
 my $max = max 2.718, 3.14, 1.618;
 is( $max, 3.14, 'list max imported' );
 
+my %hash = (x => 10);
+lock_hash(%hash);
+ok( ! eval { $hash{x} = 20 }, 'could not modify read-only hash' );
+like( $@, qr/Modification of a read-only value attempted/, 'got read-only error' );
+
+
+#-----------------------------------------------------------------------
+# test plural()
+#-----------------------------------------------------------------------
+
+is( plural('gateway'), 'gateways', 'pluralised gateway/gateways' );
+is( plural('fairy'), 'fairies', 'pluralised fairy/fairies' );
+
+__END__
+
+# Hmmm... I didn't realise that List::MoreUtils wasn't a core Perl module.
+
+use Badger::Utils 'any all';
+    
 my $any = any { $_ % 11 == 0 } @items;      # divisible by 11
 ok( $any, 'any list imported' );
 
@@ -139,11 +175,6 @@ ok( ! $all, 'all list imported' );
 
 my $true = true { $_ % 11 == 0 } @items;    # divisible by 11
 is( $true, 2, 'true list imported' );
-
-my %hash = (x => 10);
-lock_hash(%hash);
-ok( ! eval { $hash{x} = 20 }, 'could not modify read-only hash' );
-like( $@, qr/Modification of a read-only value attempted/, 'got read-only error' );
 
 
 __END__

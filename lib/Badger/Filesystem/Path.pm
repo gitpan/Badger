@@ -22,10 +22,13 @@ use Badger::Class
     constants    => 'HASH ARRAY TRUE',
     get_methods  => 'path name volume directory',
     utils        => 'blessed',
+    as_text      => 'path',
+    is_true      => 1,
     constant     => {
         is_file      => 0,
         is_directory => 0,
         type         => 'Path',
+        STAT_PATH    => 17,         # offset in extended stat fields
     },
     exports      => {
         tags     => { fields => '@VDN_FIELDS @VD_FIELDS @STAT_FIELDS' },
@@ -36,11 +39,6 @@ use Badger::Class
         bad_look => 'No path specified to look %s',
         missing  => 'No %s specified',
     };
-
-use overload
-    '""'     => \&path,
-    bool     => \&TRUE,
-    fallback => 1;
 
 use Badger::Filesystem;
 use Badger::Filesystem::Directory;
@@ -139,7 +137,10 @@ sub relative {
 
 sub definitive {
     my $self = shift;
-    $self->filesystem->definitive($self->{ path });
+    # use the definitive path from the last stat or fetch anew
+    return 
+        ($self->{ stats } && $self->{ stats }->[STAT_PATH])
+      || $self->filesystem->definitive($self->{ path });
 }
 
 sub collapse {
@@ -221,8 +222,9 @@ sub path_up {
 }
 
 sub exists {
-    my $self = shift;
-    $self->filesystem->path_exists($self->{ path });
+    shift->stat;
+#    my $self = shift;
+ #   return $self->filesystem->stat_path($self->{ path })
 }
 
 sub must_exist {
@@ -230,7 +232,7 @@ sub must_exist {
 
     unless ($self->exists) {
         if (@_ && $_[0]) {
-            # true flag to attempt
+            # true flag indicates we should attempt to create it
             $self->create;
         }
         else {
@@ -246,7 +248,14 @@ sub create {
 
 sub stat {
     my $self  = shift->must_exist;
-    my $stats = $self->{ stats } = $self->filesystem->stat_path($self->{ path });
+    my $stats = $self->{ stats } 
+              = $self->filesystem->stat_path($self->{ path })
+             || return $self->decline_msg( not_found => file => $self->{ path } );
+
+    # the definitive path can be tagged on the end
+#    $self->{ definitive } = $stats->[STAT_PATH]
+#        if defined $stats->[STAT_PATH];
+        
     return wantarray 
         ? @$stats
         :  $stats;
