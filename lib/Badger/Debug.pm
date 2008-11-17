@@ -15,22 +15,28 @@ package Badger::Debug;
 use Carp;
 use Badger::Rainbow 
     ANSI => 'bold red yellow green cyan';
+use Scalar::Util 'blessed';
 use Badger::Class
     base      => 'Badger::Exporter',
     version   => 0.01,
-    constants => 'PKG REFS ARRAY DELIMITER',
+    constants => 'PKG REFS SCALAR ARRAY HASH CODE REGEX DELIMITER',
     words     => 'DEBUG',
     import    => 'class',
+#    utils     => 'blessed reftype',
+    constant  => {
+        UNDEF => '<undef>',
+    },
     exports   => {
         tags  => {
             debug => 'debugging debug debug_up debug_caller debug_args',
-            dump  => 'dump dump_data dump_data_inline 
-                      dump_hash dump_list dump_text'
+            dump  => 'dump dump_data dump_data_inline
+                      dump_ref dump_hash dump_list dump_text'
         },
         hooks => {
             color    => \&enable_colour,
             colour   => \&enable_colour,
-            default  => [\&_export_debug_default,  1],  # expects 1 arguments
+            dumps    => [\&_export_debug_dumps,    1],  # expects 1 arguments
+            default  => [\&_export_debug_default,  1],
             modules  => [\&_export_debug_modules,  1],
             'DEBUG'  => [\&_export_debug_constant, 1],
             '$DEBUG' => [\&_export_debug_variable, 1],
@@ -46,6 +52,19 @@ our $CALLER_UP = 0;     # hackola to allow debug() to use a different caller
 our $DEBUG     = 0 unless defined $DEBUG;
 
 
+#-----------------------------------------------------------------------
+# export hooks
+#-----------------------------------------------------------------------
+
+sub _export_debug_dumps {
+    my ($self, $target, $symbol, $value, $symbols) = @_;
+    $self->export_symbol($target, dumper => sub {
+        $_[0]->dump_hash($_[0],$_[1],$value);
+    });
+    return $self;
+}
+
+
 sub _export_debug_default {
     my ($self, $target, $symbol, $value, $symbols) = @_;
     unshift(
@@ -57,6 +76,7 @@ sub _export_debug_default {
     );
     return $self;
 }
+
 
 sub _export_debug_variable {
     my ($self, $target, $symbol, $value) = @_;
@@ -70,6 +90,7 @@ sub _export_debug_variable {
     *{ $target.PKG.DEBUG } = \$value;
 }
 
+
 sub _export_debug_constant {
     my ($self, $target, $symbol, $value) = @_;
     no strict REFS;
@@ -82,10 +103,12 @@ sub _export_debug_constant {
     *{ $target.PKG.DEBUG } = sub () { $value };
 }
 
+
 sub _export_debug_modules {
     my ($self, $target, $symbol, $modules) = @_;
     $self->debug_modules($modules);
 }
+
 
 #-----------------------------------------------------------------------
 # exportable debugging methods
@@ -121,6 +144,7 @@ sub debugging {
     return $debug;
 } 
 
+
 sub debug {
     my $self   = shift;
     my $msg    = join('', @_),
@@ -139,11 +163,13 @@ sub debug {
     print STDERR $format;
 }
 
+
 sub debug_up {
     my $self = shift;
     local $CALLER_UP = shift;
     $self->debug(@_);
 }
+
 
 sub debug_caller {
     my $self = shift;
@@ -154,6 +180,7 @@ sub debug_caller {
     $self->debug($msg);
 }
 
+
 sub debug_args {
     my $self = shift;
     $self->debug_up( 
@@ -162,6 +189,7 @@ sub debug_args {
         "\n"
     );
 }
+
 
 sub debug_modules {
     my $self    = shift;
@@ -186,36 +214,51 @@ sub debug_modules {
 
 sub dump {
     my $self = shift;
-    $self->dump_data($self);
+    my $code = $self->can('dumper');
+    return $code 
+         ? $code->($self, @_)
+         : $self->dump_ref($self, @_);
 }
 
-sub dump_data {
-    my ($self, $data, $indent) = @_;
-    $indent ||= 0;
 
-    if (defined $data) {
-        return $data unless ref $data;
+sub dump_data {
+    if (! defined $_[1]) {
+        return UNDEF;
+    }
+    elsif (! ref $_[1]) {
+        return $_[1];
+    }
+    elsif (blessed($_[1]) && (my $code = $_[1]->can('dump'))) {
+        shift;  # remove $self object, leave target object first
+        return $code->(@_);
     }
     else {
-        return '<undef>';
+        goto &dump_ref;
     }
+}
 
-    if (UNIVERSAL::isa($data, 'HASH')) {
+
+sub dump_ref {
+    my ($self, $data, $indent) = @_;
+    
+    # TODO: change these to reftype
+    if (UNIVERSAL::isa($data, HASH)) {
         return $self->dump_hash($data, $indent);
     }
-    elsif (UNIVERSAL::isa($data, 'ARRAY')) {
+    elsif (UNIVERSAL::isa($data, ARRAY)) {
         return $self->dump_list($data, $indent);
     }
-    elsif (UNIVERSAL::isa($data, 'Regexp')) {
+    elsif (UNIVERSAL::isa($data, REGEX)) {
         return $self->dump_text("$data");
     }
-    elsif (UNIVERSAL::isa($data, 'SCALAR')) {
+    elsif (UNIVERSAL::isa($data, SCALAR)) {
         return $self->dump_text($$data);
     }
     else {
         return $data;
     }
 }
+
 
 sub dump_data_inline {
     local $PAD = '';
@@ -224,19 +267,34 @@ sub dump_data_inline {
     return $text;
 }
 
+
 sub dump_hash {
-    my ($self, $hash, $indent) = @_;
+    my ($self, $hash, $indent, $keys) = @_;
     $indent ||= 0;
     return "..." if $indent > $MAX_DEPTH;
     my $pad = $PAD x $indent;
-    
+
     return '{ }' unless $hash && %$hash;
+    
+    if ($keys) {
+        $keys = [ split(DELIMITER, $keys) ]
+            unless ref $keys;
+        $keys = { map { $_ => 1 } @$keys }
+            if ref $keys eq ARRAY;
+        return $self->error("Invalid keys passed to dump_hash(): $keys")
+            unless ref $keys eq HASH;
+            
+        $self->debug("constructed hash keys: ", join(', ', %$keys)) if $DEBUG;
+    }
+    
     return "\{\n" 
         . join( ",\n", 
                 map { "$pad$PAD$_ => " . $self->dump_data($hash->{$_}, $indent + 1) }
-                sort keys %$hash ) 
+                sort grep { $keys ? $keys->{ $_ } : 1 } keys %$hash 
+           ) 
         . "\n$pad}";
 }
+
 
 sub dump_list {
     my ($self, $list, $indent) = @_;
@@ -250,6 +308,7 @@ sub dump_list {
             : '' )
         . "\n$pad]";
 }
+
 
 sub dump_text {
     my ($self, $text, $length) = @_;
@@ -652,6 +711,23 @@ Modules that haven't yet been loaded will have both compile time (L<DEBUG>)
 and run time (L<$DEBUG>) debugging enabled.  Modules that have already been
 loaded will only have run time debugging enabled.
 
+=head2 dumps
+
+This option can be used to construct a specialised L<dump()> method for
+your module.  The method is used to display nested data in serialised
+text form for debugging purposes.  The default L<dump()> method for an 
+object will display all items stored within the object.  The C<dumps>
+import option can be used to limit the dump to only display the fields
+specified.
+
+    package Your::Module;
+    use Badger::Debug dumps => 'foo bar baz';
+    # ...more code...
+    
+    package main;
+    my $object = Your::Module->new;
+    print $object->dump;            # dumps foo, bar and baz
+
 =head2 colour / color
 
 Either of these (depending on your spelling preference) can be used to 
@@ -670,8 +746,8 @@ L<debug_caller()> and L<debug_args()> methods.
 
 =head2 :dump
 
-Imports all of the L<dump()>, L<dump_hash()>, L<dump_list()>, L<dump_text()>,
-L<dump_data()> and L<dump_data_inline()> methods.
+Imports all of the L<dump()>, L<dump_ref()>, L<dump_hash()>, L<dump_list()>,
+L<dump_text()>, L<dump_data()> and L<dump_data_inline()> methods.
 
 =head1 DEBUGGING METHODS
 
@@ -770,11 +846,26 @@ recursion is deliberately limited to no more than L<$MAX_DEPTH> levels deep
 of the data you're dealing with, neatly formatted for debugging purposes,
 rather than being overwhelmed with the big picture.
 
+If any of the methods encounter an object then they will call its 
+L<dump()> method if it has one.  Otherwise they fall back on L<dump_ref()>
+to expose the internals of the underlying data type.  You can create your
+own custom L<dump()> method for you objects or use the L<dumps> import
+option to have a custom L<dump()> method defined for you.
+
 =head2 dump()
 
 Debugging method which returns a text representation of the object internals.
 
     print STDERR $object->dump();
+
+You can define your own C<dump()> for an object and this will be called 
+whenever your object is dumped.  The L<dumps> import option can be used
+to generate a custom C<dump()> method.
+
+=head2 dump_ref($ref)
+
+Does The Right Thing to call the appropriate dump method for a reference
+of some kind.
 
 =head2 dump_hash(\%hash)
 
@@ -802,8 +893,11 @@ will be converted to C<\n> representations.
 
 =head2 dump_data($item)
 
-Debugging method which calls the appropriate C<dump_hash()>, C<dump_list()> or 
-C<dump_text()> method for the item passed as the first argument.
+Debugging method which calls the appropriate dump method for the item passed
+as the first argument.  If it is an object with a L<dump()> method then that
+will be called, otherwise it will fall back on L<dump_ref()>, as it will
+for any other non-object references.  Non-references are passed to the 
+L<dump_text()> method.
 
     print STDERR $object->dump_data($item);
 
