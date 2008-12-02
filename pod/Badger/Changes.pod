@@ -6,7 +6,19 @@ Badger::Changes - Summary of changes in the Badger toolkit
 
 =head2 Version 0.04
 
+Added the L<throw_msg()|Badger::Base/throw_msg()> method to L<Badger::Base>.
+
+Added L<init_method|Badger::Class/init_method> hook to L<Badger::Class> and 
+L<initialiaser()|Badger::Class/initialiaser()> to L<Badger::Class::Methods>.
+
+Changed L<Badger::Exception> L<match_type()|Badger::Exception/match_type()>
+method to accept a list or hash reference, or a string of whitespace delimited 
+exception types.
+
 Changed L<Badger::Factory> to pass C<$name> as an argument to various methods.
+Also passes arguments to load() (required for Template::TT2::Plugins)
+Also modified L<item()|Badger::Factory/item()> to accept a non-textlike 
+type argument which bypasses the module lookup.
 
 Moved a whole bunch of stuff out of L<Badger::Class> into C<Badger::Class::*>
 modules.
@@ -16,14 +28,21 @@ Added L<Badger::Class::Config> for simple configuration.
 Added L<hash()|Badger::Methods/hash()> method to L<Badger::Methods> and 
 L<hash_methods|Badger::Class|hash_methods> hook to L<Badger::Class>.
 
-Added L<trace()|Badger::Debug/trace> hook and related paraphernalia to 
-L<Badger::Exception>
+Added L<trace()|Badger::Exception/trace> hook and related paraphernalia to
+L<Badger::Exception>. Added the C<-t> / C<--trace> command line options to
+L<Badger::Test> to enable it when running tests.  Also added C<-h> / C<--help>
+options.
 
 Added L<Codec()|Badger::Codecs/Codec()> exportable subroutine to 
 L<Badger::Codecs>.
 
 Added L<Badger::Codec::URL>.  It's similar to L<Badger::Codec::URI>,
 but slightly different.  See the TT uri/url filters for the reason.
+
+Changed the L<prototype()|Badger::Prototype/prototype()> method in
+L<Badger::Prototype> to accept a single C<undef> value to clear any current
+prototype. Also added the L<has_prototype()|Badger::Prototype/has_prototype()>
+method.
 
 =head2 Version 0.03
 

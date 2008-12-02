@@ -19,7 +19,8 @@ use Badger::Class
     debug       => 0,
     mutators    => 'type',
     accessors   => 'stack',
-    constants   => 'TRUE',
+    constants   => 'TRUE ARRAY HASH DELIMITER',
+    import      => 'class',
     as_text     => 'text',      # overloaded text stringification
     is_true     => 1,           # always evaluates to a true value
     exports     => {
@@ -31,7 +32,10 @@ use Badger::Class
                 1 
             ],
         },
-    };;
+    },
+    messages => {
+        caller => "<4> called from <1>\n  in <2> at line <3>",
+    };
 
 our $FORMAT  = '<type> error - <info>'  unless defined $FORMAT;
 our $TYPE    = 'undef'                  unless defined $TYPE;
@@ -89,7 +93,7 @@ sub text {
     $text .= " in $self->{ file }"      if $self->{ file };
     $text .= " at line $self->{ line }" if $self->{ line };
     
-    if ($self->{ trace } && (my $trace = $self->trace)) {
+    if ($self->{ trace } && (my $trace = $self->stack_trace)) {
         $text .= "\n" . $trace;
     }
 
@@ -97,19 +101,33 @@ sub text {
 }
 
 
-sub trace {
+sub stack_trace {
     my $self = shift;
     my @lines;
 
     if (my $stack = $self->{ stack }) {
         foreach my $caller (@$stack) {
-            push(@lines, "called from $caller->[3] in $caller->[1] at line $caller->[2]");
+            push(@lines, $self->message( caller => @$caller ));
         }
     }
     
     return join("\n", @lines);
 }
 
+
+sub trace {
+    my $self = shift;
+    if (ref $self) {
+        return @_ 
+            ? ($self->{ trace } = shift )
+            :  $self->{ trace };
+    }
+    else {
+        return @_
+            ? $self->class->var( TRACE => shift )
+            : $self->class->var('TRACE');
+    }
+}
 
 sub throw {
     my $self = shift;
@@ -142,13 +160,22 @@ sub throw {
 #------------------------------------------------------------------------
 
 sub match_type {
-    my ($self, @types) = @_;
-    my $type = $self->{ type };
-    my %thash;
-    @thash{ @types } = (1) x @types;
-
+    my $self  = shift;
+    my $types = @_ == 1 ? shift :  [@_];
+    my $type  = $self->{ type };
+    
+    $types = [ split(DELIMITER, $types) ]
+        unless ref $types;
+        
+    $types = { map { $_ => $_ } @$types }
+        if ref $types eq ARRAY;
+    
+    return $self->error( invalid => 'type match' => $types )
+        unless ref $types eq HASH;
+        
     while ($type) {
-        return $type if $thash{ $type };
+        return $types->{ $type }
+            if $types->{ $type };
 
         # strip .element from the end of the exception type to find a 
         # more generic handler
@@ -301,7 +328,7 @@ will then append a stack track to the end of the generated message.
     }
 
 You can also call the L<stack()> method to return the stored call stack
-information, or the L<trace()> method to see a textual summary.
+information, or the L<stack_trace()> method to see a textual summary.
 
 You can enable the tracing behaviour for all exception objects by setting the
 C<$TRACE> package variable.
@@ -390,6 +417,20 @@ C<text()> explicitly.
 
     print $exception;   # database error - could not connect
 
+=head2 trace()
+
+Method to get or set the flag which determines if the exception captures
+a stack backtrace at the point at which it is thrown.  It can be called
+as an object method to affect an individual exception object, or as a class
+method to get or set the C<$TRACE> package variable which provides the 
+default value for any exceptions created from then on.
+
+    $exception->trace(1);               # object method
+    print $exception->trace;            # 1
+    
+    Badger::Exception->trace(1);        # class method - sets $TRACE
+    print Badger::Exception->trace;     # 1
+
 =head2 match_type()
 
 This method selects and returns a type string from the arguments passed 
@@ -433,6 +474,32 @@ general C<database> type still matches.
         
     print $match;    # database
 
+You can also specify multiple exception types using a reference to a list.
+
+    if ($exception->match_type(['warp.drive', 'shields'])) {
+        ...
+    }
+
+Or using a single string of whitespace delimited exception types.
+
+    if ($exception->match_type('warp.drive shields')) {
+        ...
+    }
+
+You can also pass a reference to a hash array in which the keys are exception
+types.  The corresponding value for a matching type will be returned.
+
+    my $type_map = {
+        'warp.drive'    => 'propulsion',
+        'impulse.drive' => 'propulsion',
+        'shields'       => 'defence',
+        'phasers'       => 'defence'
+    };
+    
+    if ($exception->match_type($type_map)) {
+        ...
+    }
+
 =head2 throw()
 
 This method throws the exception by calling C<die()> with the exception object
@@ -467,7 +534,7 @@ The first set of information relates to the immediate caller of the
 L<throw()> method.  The next item is the caller of that method, and so
 on.
 
-=head2 trace()
+=head2 stack_trace()
 
 If stack tracing is enabled then this method returns a text string summarising
 the caller stack at the point at which the exception was thrown.
@@ -479,7 +546,7 @@ the caller stack at the point at which the exception was thrown.
         $exception->throw();
     };
     if ($@) {
-        print $@->trace;
+        print $@->stack_trace;
     }
 
 =head1 AUTHOR

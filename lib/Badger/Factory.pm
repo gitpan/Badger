@@ -17,10 +17,11 @@ use Badger::Class
     debug     => 0,
     base      => 'Badger::Prototype Badger::Exporter',
     import    => 'class',
-    utils     => 'plural',
+    utils     => 'plural blessed textlike',
     words     => 'ITEM ITEMS ISA',
     constants => 'PKG ARRAY HASH REFS ONCE',
     constant  => {
+        OBJECT       => 'object',
         FOUND_REF    => 'found_ref',
         PATH_SUFFIX  => '_PATH',
     },
@@ -69,6 +70,8 @@ sub init_factory {
     $self->{ items  } = $items;
     $self->{ item   } = $item;
 
+    $self->debug("Initialised $item/$items factory") if DEBUG;
+    
     return $self;
 }
 
@@ -93,18 +96,23 @@ sub item {
     my $self = shift->prototype;
     my ($type, @args) = $self->type_args(@_);
     my $items = $self->{ $self->{ items } };
+    my ($name, $item, $iref);
 
-    # TODO: Template::Filters allows first argument to be a code ref or 
-    # Template::Plugin::Filter object.  Do we want to detect this and 
-    # set ($item = $type), effectively bypassing the looking, or leave it
-    # how it is and let T::P::F subclass the method to provide its own
-    # custom handling of this case.
-    
-    # massage $type to a canonical form
-    my $name = lc $type;
-       $name =~ s/\W//g;
-    my $item = $items->{ $name };
-    my $iref;
+    # Modules like Template::TT2::Filterw allow the first argument to be 
+    # a code ref or object which implements the required behaviour.  If this
+    # is the case then we bypass the whole module lookup business and assume
+    # that we've been handed an object/ref that we otherwise would have 
+    # constructed.
+
+    if (textlike $type) {
+        # massage $type to a canonical form
+        $name = lc $type;
+        $name =~ s/\W//g;
+        $item = $items->{ $name };
+    }
+    else {
+        $name = $item = $type;
+    }
     
     # TODO: add $self to $config - but this breaks if %$config check
     # in Badger::Codecs found_ref_ARRAY
@@ -112,12 +120,19 @@ sub item {
     if (! defined $item) {
         # we haven't got an entry in the items table so let's try 
         # autoloading some modules using the module path
-        $item = $self->load($type)
+        $item = $self->load($type, @args)
             || return $self->error_msg( not_found => $self->{ item }, $type );
         $item = $self->construct($name, $item, @args);
     }
     elsif ($iref = ref $item) {
-        # TODO: sanitise $iref
+        $iref = OBJECT if blessed $item;
+
+        $self->debug(
+            "Looking for handler methods: ", 
+            FOUND_REF,'_'.$iref, "() or ", 
+            FOUND_REF, "()"
+        ) if DEBUG;
+        
         my $method 
              = $self->can(FOUND_REF . '_' . $iref)
             || $self->can(FOUND_REF)
@@ -239,6 +254,8 @@ sub AUTOLOAD {
 
     # upgrade class methods to calls on prototype
     $self = $self->prototype unless ref $self;
+
+    $self->debug("factory item: $self->{ item }\n") if DEBUG;
     
     if ($name eq $self->{ item }) {
         $self->class->method( $name => $self->can('item') );
