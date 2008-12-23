@@ -17,11 +17,12 @@ use Badger::Class
     debug     => 0,
     base      => 'Badger::Prototype Badger::Exporter',
     import    => 'class',
-    utils     => 'plural blessed textlike',
+    utils     => 'plural blessed textlike dotid',
     words     => 'ITEM ITEMS ISA',
     constants => 'PKG ARRAY HASH REFS ONCE',
     constant  => {
         OBJECT       => 'object',
+        FOUND        => 'found',
         FOUND_REF    => 'found_ref',
         PATH_SUFFIX  => '_PATH',
     },
@@ -33,10 +34,9 @@ use Badger::Class
 
 our $RUNAWAY = 0;
 our $AUTOLOAD;
-our %LOADED;
-our %MAPPED;
 
 *init = \&init_factory;
+
 
 sub init_factory {
     my ($self, $config) = @_;
@@ -69,11 +69,15 @@ sub init_factory {
     $self->{ $items } = $class->hash_vars(uc $items, $config->{ $items });
     $self->{ items  } = $items;
     $self->{ item   } = $item;
+    $self->{ loaded } = { };
 
     $self->debug("Initialised $item/$items factory") if DEBUG;
+    $self->debug("Path: [", join(', ', @{ $self->{ path } }), "]") if DEBUG;
+    
     
     return $self;
 }
+
 
 sub path {
     my $self = shift->prototype;
@@ -81,6 +85,7 @@ sub path {
         ? ($self->{ path } = ref $_[0] eq ARRAY ? shift : [ @_ ])
         :  $self->{ path };
 }
+
 
 sub items {
     my $self  = shift->prototype;
@@ -92,137 +97,208 @@ sub items {
     return $items;
 }
 
+
 sub item {
     my $self = shift->prototype;
     my ($type, @args) = $self->type_args(@_);
+
+    # In most cases we're expecting $type to be a name (e.g. Table) which we
+    # lookup in the items hash, or tack onto one of the module bases in the 
+    # path (e.g. Template::Plugin) to create a full module name which we load 
+    # and instantiate (e.g. Template::Plugin::Table).  However, the name might 
+    # be explicitly mapped to a  reference of some kind, or the $type passed 
+    # in could already be a reference (e.g. Template::TT2::Filters allow the 
+    # first argument to be a code ref or object which implements the required 
+    # filtering behaviour).  In which case, we bypass any name-based lookup
+    # and skip straight onto the "look what I found!" phase
+
+    return $self->found($type, $type, \@args)
+        unless textlike $type;
+
+    $type = $type . '';     # auto-stringify any textlike objects
+    
+    # OK, so $type is a string.  We'll also create a canonical version of the 
+    # name (lower case dotted) to provide a case/syntax insensitve fallback
+    # (e.g. so "foo.bar" can match against "Foo.Bar", "Foo::Bar" and so on)
+    
     my $items = $self->{ $self->{ items } };
-    my ($name, $item, $iref);
+    my $canon = dotid $type;
 
-    # Modules like Template::TT2::Filterw allow the first argument to be 
-    # a code ref or object which implements the required behaviour.  If this
-    # is the case then we bypass the whole module lookup business and assume
-    # that we've been handed an object/ref that we otherwise would have 
-    # constructed.
+    $self->debug("Looking for '$type' or '$canon' in $self->{ items }") if DEBUG;
+    
+    my $item  = $items->{ $type  } 
+            ||= $items->{ $canon }
+            # TODO: this needs to be defined-or, like //
+            # Plugins can return an empty string to indicate that they 
+            # do nothing.
+            # HMMM.... or does it?
+            ||  $self->find($type, \@args)
+            ||  $self->default($type, \@args)
+            ||  return $self->not_found($type, \@args);
 
-    if (textlike $type) {
-        # massage $type to a canonical form
-        $name = lc $type;
-        $name =~ s/\W//g;
-        $item = $items->{ $name };
-    }
-    else {
-        $name = $item = $type;
-    }
+    return $self->found($type, $item, \@args);
+}
+
+
+# Simple pass-through method to grok $type and @args from argument list
+# Subclasses can re-define this to insert their own type mapping or argument
+# munging, e.g. to inject values into the configuration params for an object
+
+sub type_args {
+    shift;
+    return @_;
+}
+
+
+sub find {
+    my $self   = shift;
+    my $type   = shift;
+    my $bases  = $self->path;
+    my $module;
     
-    # TODO: add $self to $config - but this breaks if %$config check
-    # in Badger::Codecs found_ref_ARRAY
-    
-    if (! defined $item) {
-        # we haven't got an entry in the items table so let's try 
-        # autoloading some modules using the module path
-        $item = $self->load($type, @args)
-            || return $self->error_msg( not_found => $self->{ item }, $type );
-        $item = $self->construct($name, $item, @args);
+    foreach my $base (@$bases) {
+        return $module
+            if $module = $self->load( $self->module_names($base, $type) );
     }
-    elsif ($iref = ref $item) {
-        $iref = OBJECT if blessed $item;
+
+    return undef;
+}
+
+
+sub load {
+    my $self   = shift;
+    my $loaded = $self->{ loaded }; 
+
+    foreach my $module (@_) {
+        # see if we've previously loaded a module with this name (true
+        # value) or failed to load a module (defined but false value)
+            
+        if ($loaded->{ $module }) {
+            $self->debug("$module has been previously loaded") if DEBUG;
+            return $module;
+        }
+        elsif (defined $loaded->{ $module }) {
+            next;
+        }
+                        
+        no strict REFS;
+        $self->debug("attempting to load $module\n") if DEBUG;
+
+        # Some filesystems are case-insensitive (like Apple's HFS), so an 
+        # attempt to load Badger::Example::foo may succeed, when the correct 
+        # package name is actually Badger::Example::Foo.  We double-check
+        # by looking for $VERSION or @ISA.  This is a bit dodgy because we might be
+        # loading something that has no ISA.  Need to cross-check with 
+        # what's going on in Badger::Class _autoload()
+
+        if ( ( $loaded->{ $module } = class($module)->maybe_load )
+        &&   ( ${ $module.PKG.VERSION } || @{ $module.PKG.ISA }  ) ) {
+            $self->debug("loaded $module\n") if DEBUG;
+            return $module 
+        }
+
+        $self->debug("failed to load $module\n") if DEBUG;
+    }
+
+    return undef;
+}
+
+
+sub default {
+    # No default, by default.  Subclasses can do something here
+    return undef;
+}
+
+
+sub found {
+    my ($self, $type, $item, $args) = @_;
+    
+    if (ref $item) {
+        # if it's a reference we found then forward it onto the appropriate
+        # method, e.g found_array(), found_hash(), found_code().  Fall back 
+        # on found_ref()
+        my $iref = blessed($item)
+            ? OBJECT 
+            : lc ref $item;
 
         $self->debug(
             "Looking for handler methods: ", 
-            FOUND_REF,'_'.$iref, "() or ", 
+            FOUND,'_'.$iref, "() or ", 
             FOUND_REF, "()"
         ) if DEBUG;
         
         my $method 
-             = $self->can(FOUND_REF . '_' . $iref)
+             = $self->can(FOUND . '_' . $iref)
             || $self->can(FOUND_REF)
             || return $self->error_msg( bad_ref => $self->{ item }, $type, $iref );
             
-        $item = $method->($self, $name, $item, @args) 
-            || return;
+        $item = $method->($self, $type, $item, $args);
     }
     else {
-        # otherwise we load the module and create a new object
-        class($item)->load unless $LOADED{ $item }++;
-        $item = $self->construct($name, $item, @args);
+        # otherwise it's the name of a module
+        $item = $self->found_module($type, $item, $args);
     }
 
-    return $self->found( $name => $item );
-#    return $item;
+    # NOTE: an item can be defined but false, e.g. a Template::Plugin which
+    # return '' from its new() method to indicate it does nothing objecty
+    return unless defined $item;
+    
+    $self->debug("Found result: $type => $item") if DEBUG;
+
+    # TODO: what about caching result?  Do we always leave that to subclasses?
+    return $self->result($type, $item, $args);
 }
 
-# TODO: make this more generic and have a selectable/pluggable strategy
 
-sub type_args {
-    my $self   = shift;
-    my $type   = shift;
-    my $params = @_ && ref $_[0] eq HASH ? shift : { @_ };
-    $params->{ $self->{ items } } ||= $self;
-    return ($type, $params);
+# if we find a module name then we load it and call found_class() to 
+# instantiate an object
+
+sub found_module {
+    my ($self, $type, $module, $args) = @_;
+    $self->debug("Found module: $type => $module") if DEBUG;
+    $self->{ loaded }->{ $module } ||= class($module)->load;
+    return $self->construct($type, $module, $args);
 }
+
+
+# default behaviour for handling a factory entry that is an ARRAY
+# reference is to assume that it is a [$module, $class] pair
+
+sub found_array {
+    my ($self, $type, $item, $args) = @_;
+    my ($module, $class) = @$item;
+    $self->{ loaded }->{ $module } ||= class($module)->load;
+    return $self->construct($type, $class, $args);
+}
+
+# subclasses may also define other found_XXX() types:
+#   found_code(), found_hash(), found_object()
+
+sub not_found {
+    my ($self, $name, @args) = @_;
+    $self->error_msg( not_found => $self->{ item }, $name );
+}
+
+# stub method which instantiates an object from a class name.
+# subclasses may redefine this to do something more interesting
 
 sub construct {
-    shift;            # $self
-    shift;            # $name
-    shift->new(@_);   # $class, @args
+    my ($self, $type, $class, $args) = @_;
+    $self->debug("constructing class: $type => $class") if DEBUG;
+    return $class->new(@$args);
 }
-    
-sub module_names {
-    my ($self, $base, $type) = @_;
-#    (ucfirst $type, $type, uc $type);   # Foo, foo, FOO
 
-    join( PKG,
-         $base,
-         map {
-             join( '',
-                   map { s/(.)/\U$1/; $_ }
-                   split('_')
-             );
-         }
-         split(/\./, $type)
+
+sub module_names {
+    my $self = shift;
+    my @bits = map { split /\.+/ } @_;
+
+    return (
+        join( PKG, map { ucfirst $_ } @bits ),
+        join( PKG, @bits )
     );
 }
 
-sub load {
-    my $self   = shift->prototype;
-    my $type   = shift;
-    my $bases  = $self->path;
-    my $loaded = 0;
-    my $module;
-    
-    foreach my $base (@$bases) {
-        foreach $module ($self->module_names($base, $type)) {
-            no strict REFS;
-
-            # TODO: handle multi-element names, e.g. foo.bar
-            
-            $self->debug("maybe load $module ?\n") if $DEBUG;
-            # Some filesystems are case-insensitive (like Apple's HFS), so an 
-            # attempt to load Badger::Example::foo may succeed, when the correct 
-            # package name is actually Badger::Example::Foo
-            return $module 
-                if ($loaded || class($module)->maybe_load && ++$loaded)
-                && @{ $module.PKG.ISA };
-                
-            $self->debug("failed to load $module\n") if $DEBUG;
-        }
-    }
-    return $self->error_msg( not_found => $self->{ item } => $type );
-}
-
-sub found_ref_ARRAY {
-    my ($self, $name, $item, @args) = @_;
-    
-    # default behaviour for handling a factory entry that is an ARRAY
-    # reference is to assume that it is a [$module, $class] pair
-    
-    class($item->[0])->load unless $LOADED{ $item->[0] }++;
-    return $self->construct($name, $item->[1], @args);
-}
-
-sub found {
-    return $_[2];
-}
 
 sub can {
     my ($self, $name) = @_;
@@ -241,12 +317,20 @@ sub can {
     }
 }
 
+
+# Default result() method simply returns item.  Hook for subclasses
+
+sub result {
+    $_[2];
+}
+
+
 sub AUTOLOAD {
     my ($self, @args) = @_;
     my ($name) = ($AUTOLOAD =~ /([^:]+)$/ );
     return if $name eq 'DESTROY';
 
-    $self->debug("AUTOLOAD $name\n") if $DEBUG;
+    $self->debug("AUTOLOAD $name\n") if DEBUG;
 
     local $RUNAWAY = $RUNAWAY;
     $self->error("AUTOLOAD went runaway on $name")
@@ -354,69 +438,283 @@ of defining factory subclasses.
 
 =head1 DESCRIPTION
 
-This module implements a base class factory object for loading modules
-and instantiating objects on demand.
+This module implements a base class factory object for loading modules and
+instantiating objects on demand. It originated in the L<Template::Plugins>
+module, evolved over time in various directions for other projects, and was 
+eventually pulled back into line to become C<Badger::Factory>.
 
-TODO: the rest of the documentation
+=head2 Defining a Factory Module
+
+The C<Badger::Factory> module isn't designed to be used by itself. Rather it
+should be used as a base class for your own factory modules. For example,
+suppose you have a project which has lots of C<My::Widget::*> modules. You can
+define a factory for them like so:
+
+    package My::Widgets;
+    use base 'Badger::Factory';
+    
+    our $ITEM        = 'widget';
+    our $ITEMS       = 'widgets';
+    our $WIDGET_PATH = ['My::Widget', 'Your::Widget'];
+
+    # lookup table for any non-standard spellings/capitalisations/paths
+    our $WIDGETS     = {
+        url   => 'My::Widget::URL',       # non-standard capitalisation
+        color => 'My::Widget::Colour',    # different spelling
+        amp   => 'Nigels::Amplifier',     # different path
+    };
+
+    1;
+
+The C<$ITEM> and C<$ITEMS> package variables are used to define the
+singular and plural names of the items that the factory is responsible for.
+In this particular case, the C<$ITEMS> declaration isn't strictly 
+necessary because the module would correctly "guess" the plural name 
+C<widgets> from the singular C<widget> defined in C<$ITEM>.  However, 
+this is only provided as a convenience for those English words that 
+pluralise regularly and shouldn't be relied upon to work all the time.
+See the L<pluralise()|Badger::Utils/pluralise()> method in L<Badger::Utils>
+for further information, and explicitly specify the plural in C<$ITEMS> if
+you're in any doubt.
+
+The C<$WIDGET_PATH> is used to define one or more base module names under
+which your widgets are located.  The name of this variable is derived 
+from the upper case item name in C<$ITEM> with C<_PATH> appended.  In this
+example, the factory will look for the C<Foo::Bar> module as either 
+C<My::Widget::Foo::Bar> or C<Your::Widget::Foo::Bar>.
+
+If you've got any widgets that aren't located in one of these locations,
+or if you want to provide some aliases to particular widgets then you can
+define them in the C<$WIDGETS> package variable.  The name of this variable
+is the upper case conversion of the value defined in the C<$ITEMS> package
+variable.
+
+=head2 Using Your Factory Module
+
+Now that you've define a factory module you can use it like this.
+
+    use My::Widgets;
+    
+    my $widgets = My::Widgets->new;
+    my $foo_bar = $widgets->widget('Foo::Bar');
+
+The C<widget()> method is provided to load a widget module and instantiate
+a widget object.
+
+The above example is equivalent to:
+
+    use My::Widget::Foo::Bar;
+    my $foo_bar = My::Widget::Foo::Bar->new;
+
+Although it's not I<strictly> equivalent because the factory could just
+has easily have loaded it from C<Your::Widget::Foo::Bar> in the case that
+C<My::Widget::Foo::Bar> doesn't exist.
+
+You can specify additional arguments that will be forwarded to the object 
+constructor method.
+
+    my $foo_bar = $widgets->widget('Foo::Bar', x => 10, y => 20);
+
+The factory module can be customised using configuration parameters. For
+example, you can provide additional values for the C<widget_path>, or define
+additional widgets:
+
+    my $widgets = My::Widgets->new(
+        widget_path => ['His::Widget', 'Her::Widget'],
+        widgets     => {
+            extra => 'Another::Widget::Module',
+            super => 'Golly::Gosh',
+        }
+    );
+
+The factory module is an example of a L<prototype()|Badger::Prototype> module.
+This means that you can call the C<widget()> method as a class method to save
+yourself of explicitly creating a factory object.
+
+    my $widget = My::Widgets->widget('Foo::Bar');
 
 =head1 METHODS
 
+=head2 new()
+
+Constructor method to create a new factory module.
+
+    my $widgets = My::Widgets->new;
+
 =head2 path($path)
 
-Mutator method to get/set the factory module path.
+Used to get or set the factory module path.
 
-TODO: examples
+    my $path = $widgets->path;
+    $widgets->path(['My::Widgets', 'Your::Widgets', 'Our::Widgets']);
+
+Calling the method with arguments replaces any existing list.
 
 =head2 items(%items)
 
-TODO: Method to fetch or update the lookup table for mapping names to modules
+Used to fetch or update the lookup table for mapping names to modules.
+
+    my $items = $widgets->items;
+    $widgets->items( foo => 'My::Plugin::Foo' );
+
+Calling the method with arguments (named parameters or a hash reference) 
+will add the new definitions into the existing table.
+
+This method can also be aliased by the plural name defined in C<$ITEMS>
+in your subclass module.
+
+    $widgets->widgets;
 
 =head2 item($name,@args)
 
-TODO: Method to load a module and insantiate an object.
+Method to load a module and instantiate an object.
+
+    my $widget = $widgets->item('Foo');
+
+Any additional arguments provided after the module name are forwarded to the
+object's C<new()> constructor method.
+
+    my $widget = $widgets->item( Foo => 10, 20 );
+
+This method can also be aliased by the singular name defined in C<$ITEM>
+in your subclass module.
+
+    my $widget = $widgets->widget( Foo => 10, 20 );
+
+The module name specified can be specified in lower case.  The name is
+capitalised as a matter of course.
+
+    # same as Foo
+    my $widget = $widgets->widget( foo => 10, 20 );
+
+Multi-level names can be separated with dots rather than C<::>.  This is in
+keeping with the convention used in the Template Toolkit.  Each element after
+a dot is capitalised.
+
+    # same as Foo::Bar
+    my $widget = $widgets->widget( 'foo.bar' => 10, 20 );
+
+=head1 INTERNAL METHODS
 
 =head2 type_args(@args)
 
-TODO: Method to perform any manipulation on the argument list before passing 
-to object constructor
+This method can be re-defined by a subclass to perform any pre-manipulation on
+the arguments passed to the L<item()> method.  The first argument is usually
+the type (i.e. name) of module requested, followed by any additional arguments
+for the object constructor.
 
-=head2 load($type)
+    my ($self, $type, @args) = @_;
 
-TODO: Method to load a module for an object type
+The method should return them like so:
 
-=head2 construct($name,$class,@args)
+    return ($type, @args);
 
-TODO: Method to instantiate a $class object using the arguments provided.
+=head2 find($type,\@args)
+
+This method is called to find and dynamically load a module if it doesn't
+already have an entry in the internal C<items> table.  It iterates through
+each of the base paths for the factory and calls the L<load()> method to
+see if the module can be found under that prefix.
+
+=head2 load(@module_names)
+
+This method is called to dynamically load a module.  It iterates through
+each of the module name passed as arguments until it successfully loads
+one.  At that point it returns the module name that was successfully 
+loaded and ignores the remaining arguments.  If none of the modules can
+be loaded then it returns C<undef>
+
+=head2 default($type,\@args)
+
+This method is called to provide a default value in the case that L<find()>
+wasn't able to find and load a module.  It does nothing in the base class
+factory module, but can be re-defined by subclasses to do something more 
+interesting.
+
+=head2 found($name,$item,\@args)
+
+This method is called when an item has been found, either in the internal
+C<items> lookup table, or by a call to L<find()>. The L<$item> argument is
+usually a module name that is forwarded onto L<found_module()>. However, it
+can also be a reference which will be forwarded onto one of the following
+methods depending on its type: L<found_array()>, L<found_hash()>,
+L<found_scalar()>, L<found_object()> (and in theory, C<found_regex()>, 
+C<found_glob()> and maybe others, but they're not implemented).
+
+The result returned by the appropriate C<found_XXXXX()> method will then
+be forwarded onto the L<result()> method.  The method returns the result
+from the L<result()> method.
+
+=head2 found_module()
+
+This method is called when a requested item has been mapped to a module name.
+The module is loaded if necessary, then the L<construct()> method is called
+to construct an object.
+
+=head2 found_array()
+
+An entry in the C<items> (aka C<widgets> in our earlier example) table
+can be a reference to a list containing a module name and a separate class
+name.
+
+    my $widgets = My::Widgets->new(
+        widgets => {
+            wizbang => ['Wiz::Bang', 'Wiz::Bang::Bash'],
+        },
+    );
+
+The module listed in the first element is loaded, but the class name in 
+the second element is used to instantiate an object.
+
+=head2 found_hash()
+
+This method isn't implemented in the base class, but can be defined by
+subclasses to handle the case where a request is mapped to a hash reference.
+
+=head2 found_scalar()
+
+This method isn't implemented in the base class, but can be defined by
+subclasses to handle the case where a request is mapped to a scalar reference.
+
+=head2 found_object()
+
+This method isn't defined in the base class, but can be defined by subclasses
+to handle the case where a request is mapped to an existing object.
+
+=head2 construct($name,$class,\@args)
+
+This method instantiates a C<$class> object using the arguments provided.
 In the base class this method  simply calls:
 
-    $class->new(@args);
+    $class->new(@$args);
+
+=head2 result($name,$result,\@args)
+
+This method is called at the end of a successful request after an object
+has been instantiated (or perhaps re-used from an internal cache).  In the
+case class it simply returns C<$result> but can be redefined in a subclass
+to do something more interesting.
 
 =head2 module_names($type)
 
-TODO: Method to expand an object type into a candidate list of module names.
+This method performs the necessary mapping from a requested module name to 
+its canonical form.
 
-=head2 found_ref_ARRAY($name,$entry,@args)
+=head2 not_found($name,@args)
 
-TODO: Method hook to handle the case of a factory entry defined as an 
-array reference.  It is assumed to be C<[$module, $class]>.  The C<$module>
-is loaded and the C<$class> instantiated.
-
-Subclasses can re-define this to change this behaviour.
-
-=head2 found($name,$item)
-
-TODO: Method hook to perform any post-processing (e.g. caching) after an
-item has been found and instantiated.
+This method is called when the requested item is not found. The method simply
+throws an error using the C<not_found> message format. The method can be
+redefined in subclasses to perform additional fallback handing.
 
 =head2 can($method)
 
-TODO: Implements the magix to ensure that the item-specific accessor methods
-(e.g. widget()/widgets()) are generated on demand.
+This method implements the magic to ensure that the item-specific accessor
+methods (e.g. C<widget()>/C<widgets()>) are generated on demand.
 
 =head2 AUTOLOAD(@args)
 
-TODO: Implements the AUTOLOAD magic to generate the item-specific accessor
-methods (e.g. widget()/widgets()) on demand.
+This implements the other bit of magic to generate the item-specific accessor
+methods on demand.
 
 =head1 AUTHOR
 

@@ -89,6 +89,7 @@ t/core/lib/My/Debugger3.pm
 t/core/lib/My/Exporter/Base1.pm
 t/core/lib/My/Exporter/Base2.pm
 t/core/lib/My/Exporter/Explicit.pm
+t/core/lib/My/Exporter/Generator.pm
 t/core/lib/My/Exporter/Subclass1.pm
 t/core/lib/My/Exporter/Subclass2.pm
 t/core/lib/My/Exporter4.pm
