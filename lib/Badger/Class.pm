@@ -44,10 +44,14 @@ use overload
     '""'     => 'name',
     fallback => 1;
 
-
 our $VERSION   = 0.01;
 our $DEBUG     = 0 unless defined $DEBUG;
 our $LOADED    = { }; 
+
+BEGIN {
+    # generate a compile time constant from $DEBUG
+    *DEBUG = sub() { $DEBUG };
+}
 
 
 #-----------------------------------------------------------------------
@@ -87,6 +91,7 @@ our $EXPORT_ANY   = ['BCLASS'];
 our $EXPORT_FAIL  = \&_export_fail;
 our $EXPORT_HOOKS = {
     debug    => [\&_debug_hook, 1],
+    dumps    => [\&_dumps_hook, 1],
     map { $_ => \&_export_hook } 
     qw( 
         base uber mixin mixins version constant constants words vars 
@@ -126,6 +131,10 @@ sub _export_fail {
     croak sprintf(NO_VALUE, $key)
         unless @$symbols;
 
+    # We use the two-argument call to class() which tells it that we want
+    # a $class metaclass object rather than the default of Badger::Class.
+    # This is because subclasses may be calling this method so $class isn't
+    # always going to be Badger::Class
     class($target, $class)->$hook(shift @$symbols);
 }
 
@@ -137,41 +146,65 @@ sub _debug_hook {
     _autoload($class->DEBUGGER)->export($target, %$debug);
 }
 
+sub _dumps_hook {
+    my ($class, $target, $key, $dumps) = @_;
+    _autoload($class->DEBUGGER)->export($target, dumps => $dumps);
+}
+
 
 
 #-----------------------------------------------------------------------
-# Define a lexical scope to enclose class lookup table
+# Define a lexical scope to enclose class lookup tables
 #-----------------------------------------------------------------------
+
+# Badger::Class and each of its subclasses have their own metaclass
+# table mapping class names to objects.
+my $METACLASSES = { };
 
 {
-    # lookup table mapping package names to Badger::Class objects
-    my $CLASSES = { };
-
     # class/package name - define this up-front so we can use it below
     sub CLASS {
-        my $class = @_ ? shift : (caller())[0];
-        ref $class || $class;
+        # first argument is object or class name, otherwise return caller
+        @_ ? (ref $_[0] || $_[0])
+           : (caller())[0];
     }
 
     # Sorry if this messes with your head.  We want class() and classes()
     # methods that create Badger::Class objects.  However, we also want 
-    # Badger::Class to be subclassable (e.g. Template::Class), where class()
-    # and classes() return the subclass objects (e.g. Template::Class).  So
-    # we have an UBER() class method whose job it is to create the class()
-    # and classes() methods for the relevant class or subclass
+    # Badger::Class to be subclassable (e.g. Badger::Factory::Class), where 
+    # class() and classes() return the subclass objects instead of the usual
+    # Badger::Class.  So we have an UBER() class method whose job it is to 
+    # create the class() and classes() methods for the relevant metaclass
+    
     sub UBER {
+        # $pkg is the metaclass name, e.g. Badger::Class, but can also be 
+        # subclasses, e.g. Badger::Factory::Class
         my $pkg = shift || __PACKAGE__;
+        
+        # $CLASSES is a lookup table mapping package names to Badger::Class 
+        # objects.  We need a new lookup table for each subclass of 
+        # Badger::Class, so we reuse/create such a table in $METACLASSES,
+        # indexed by the metaclass name, e.g. Badger::Class, etc.
+        my $CLASSES = $METACLASSES->{ $pkg } ||= { };
+        
+        # We want to keep the class() subroutine as fast as possible as it
+        # gets called often.  It's a tiny bit faster to declare a variable
+        # outside the closure and reuse it, rather than defining a new 
+        # variable each time the closure is called.  Ho hum.
+        my $class;  
 
         # The class() subroutine is used to fetch/create a Badger::Class 
-        # object for a package name.  We create it via a generator so that
-        # subclasses can define their own custom class() method which blesses 
-        # the class objects into their own class (e.g. Template::Class rather 
-        # than Badger::Class)
+        # object for a package name.  The first argument is the class name,
+        # or the caller's package if undefined and we look it up in $CLASSES.
+        # If we get a second argument then we're being asked to lookup an 
+        # entry for a subclass of Badger::Class, e.g. Badger::Factory::Class,
+        # so we first lookup the correct $METACLASS table.
         my $class_sub = sub {
-            my $class = @_ ? shift : (caller())[0];
-            my $bless = shift || $pkg;
+            $class = @_ ? shift : (caller())[0];
             $class = ref $class || $class;
-            return $CLASSES->{ $class } || $bless->new($class);
+            return @_
+                ? $METACLASSES->{ $_[0] }->{ $class } ||= $_[0]->new($class)
+                : $CLASSES->{ $class } ||= $pkg->new($class);
         };
 
         # The classes() method returns a list of Badger::Class objects for 
@@ -180,18 +213,19 @@ sub _debug_hook {
         # As with class(), we use a generator to create a closure for the 
         # subroutine to allow the the class object name to be parameterised.
         my $classes_sub = sub {
-            my $class = shift || (caller())[0];
+            $class = shift || (caller())[0];
             $class_sub->($class)->heritage;
         };
 
         no strict REFS;
         no warnings 'redefine';
-#        *{ $pkg.PKG.'CLASS'     } = sub () { $pkg };
+        *{ $pkg.PKG.'CLASS'     } = \&CLASS;
         *{ $pkg.PKG.'class'     } = $class_sub;
+        *{ $pkg.PKG.'bclass'    } = $class_sub;         # plan B 
         *{ $pkg.PKG.'classes'   } = $classes_sub;
         *{ $pkg.PKG.'_autoload' } = \&_autoload;
 
-        $pkg->export_any('CLASS', 'class', 'classes');
+        $pkg->export_any('CLASS', 'class', 'bclass', 'classes');
     }
 
     # call the UBER method to generate class() and classes() for this module
@@ -216,7 +250,6 @@ class(CLASS)->methods(
     }
     keys %$DELEGATES
 );
-
 
 
 
@@ -311,7 +344,7 @@ sub any_var {
     $name =~ s/^\$//;
 
     foreach my $pkg ($self->heritage) {
-        _debug("looking for $name in $pkg\n") if $DEBUG;
+        _debug("looking for $name in $pkg\n") if DEBUG;
         return ${ $pkg.PKG.$name } if defined ${ $pkg.PKG.$name };
     }
 
@@ -332,7 +365,7 @@ sub any_var_in {
 
     foreach $pkg ($self->heritage) {
         foreach $name (@$names) {
-            _debug("looking for $name in $pkg\n") if $DEBUG;
+            _debug("looking for $name in $pkg\n") if DEBUG;
             return ${ $pkg.PKG.$name } if defined ${ $pkg.PKG.$name };
         }
     }
@@ -350,11 +383,13 @@ sub all_vars {
     # remove any leading '$' 
     $name =~ s/^\$//;
 
+#    _debug("all_vars() caller: ", join(', ', caller()), "\n");
+
     foreach my $pkg ($self->heritage) {
-        _debug("looking for $name in $pkg\n") if $DEBUG;
+        _debug("looking for $name in ", $pkg || "UNDEF", "\n") if DEBUG;
         push(@values, $value)
             if defined ($value = ${ $pkg.PKG.$name });
-        _debug("got: $value\n") if $DEBUG && $value;
+        _debug("got: $value\n") if DEBUG && $value;
     }
     
     return wantarray ? @values : \@values;
@@ -419,6 +454,8 @@ sub hash_value {
     # remove any leading '$' 
     $name =~ s/^\$//;
 
+#    _debug("hash_value() caller: ", join(', ', caller()), "\n");
+
     foreach my $hash ($self->all_vars($name)) {
         next unless ref $hash eq HASH;
         return $hash->{ $item }
@@ -435,6 +472,7 @@ sub hash_value {
 
 sub parents {
     my $self    = shift;
+    my $class   = ref $self || $self;
     my $pkg     = $self->{ name };
     my $parents = $self->{ parents } ||= do {
         no strict REFS;
@@ -486,7 +524,7 @@ sub base {
     foreach my $base (@$bases) {
         no strict REFS;
         next if $pkg->isa($base);
-        _debug("Adding $pkg base class $base\n") if $DEBUG;
+        _debug("Adding $pkg base class $base\n") if DEBUG;
         push @{ $pkg.PKG.ISA }, $base;
         _autoload($base);
     }
@@ -524,7 +562,7 @@ sub mixins {
 #    $mixins->{ $_ } 
     push(@$mixins, @$syms);
 
-    $self->debug("$self MIXINS are: ", $self->dump_data_inline($mixins), "\n") if $DEBUG;
+    $self->debug("$self MIXINS are: ", $self->dump_data_inline($mixins), "\n") if DEBUG;
     
     $self->exports( any => $syms );
 
@@ -534,14 +572,14 @@ sub version {
     my ($self, $version) = @_;
     my $pkg = $self->{ name };
     no strict 'refs';
-    _debug("Defining $pkg version $version\n") if $DEBUG;
+    _debug("Defining $pkg version $version\n") if DEBUG;
 
-    # define $VERSION and version()
+    # define $VERSION and VERSION()
     *{ $pkg.PKG.VERSION } = \$version
         unless defined ${ $pkg.PKG.VERSION }
                     && ${ $pkg.PKG.VERSION };
-    *{ $pkg.PKG.VERSION} = sub() { $version }
-        unless defined *{ $pkg.PKG.'version' };
+    *{ $pkg.PKG.VERSION } = sub() { $version }
+        unless defined &{ $pkg.PKG.VERSION };        # CHECK THIS - was 'version'
 
     return $self;
 }
@@ -561,7 +599,7 @@ sub constant {
     while (my ($name, $value) = each %$constants) {
         no strict REFS;
         my $v = $value;     # new lexical variable to bind in closure
-        _debug("Defining $pkg constant $name => $value\n") if $DEBUG;
+        _debug("Defining $pkg constant $name => $value\n") if DEBUG;
         *{ $pkg.PKG.$name } = sub() { $value };
     }
     return $self;
@@ -578,7 +616,7 @@ sub words {
     foreach (@$words) {
         no strict REFS;
         my $word = $_;  # new lexical variable to bind in closure
-        _debug("Defining $pkg word $word\n") if $DEBUG;
+        _debug("Defining $pkg word $word\n") if DEBUG;
         *{ $pkg.PKG.$word } = sub() { $word };
     }
     return $self;
@@ -610,11 +648,11 @@ sub messages {
     my $messages = ${ $pkg.PKG.MESSAGES };
     
     if ($messages) {
-        _debug("merging $pkg messages: ", join(', ', keys %$args), "\n") if $DEBUG;
+        _debug("merging $pkg messages: ", join(', ', keys %$args), "\n") if DEBUG;
         @$messages{ keys %$args } = values %$args;
     }
     else {
-        _debug("adding $pkg messages: ", join(', ', keys %$args), "\n") if $DEBUG;
+        _debug("adding $pkg messages: ", join(', ', keys %$args), "\n") if DEBUG;
         ${ $pkg.PKG.MESSAGES } = $messages = $args;
     }
     
@@ -632,7 +670,7 @@ sub method {
     
     # method($name => $code) or $method($name => $value) to define method
     my $code = shift;
-    _debug("defining method: $self\::$name => $code\n") if $DEBUG;
+    _debug("defining method: $self\::$name => $code\n") if DEBUG;
 
     *{ $self->{name}.PKG.$name } = ref $code eq CODE
         ? $code
@@ -648,7 +686,7 @@ sub methods {
     no strict REFS;
 
     while (my ($name, $code) = each %$args) {
-        _debug("defining method: $self\::$name => $code\n") if $DEBUG;
+        _debug("defining method: $self\::$name => $code\n") if DEBUG;
         *{ $pkg.PKG.$name } 
             = ref $code eq CODE ? $code : sub { $code };
     }
@@ -658,7 +696,7 @@ sub methods {
 sub overload {
     my $self = shift;
     my $args = @_ && ref $_[0] eq HASH ? shift : { @_ };
-    _debug("overload on $self->{name} : { ", join(', ', %$args), " }\n") if $DEBUG;
+    _debug("overload on $self->{name} : { ", join(', ', %$args), " }\n") if DEBUG;
     overload::OVERLOAD($self->{name}, %$args);
     return $self;
 }
@@ -676,7 +714,7 @@ sub is_true {
         $arg;
     $self->overload( bool => $method, fallback => 1 );
 }
-    
+
 
 #-----------------------------------------------------------------------
 # misc methods
@@ -701,8 +739,16 @@ sub load {
 sub maybe_load {
     my $self = shift;
     return eval { $self->load } || do {
-        _debug("maybe_load($self) caught error: $@\n") if $DEBUG;
-        die $@ if $@ && $@ !~ /^Can't locate .*? in \@INC/;
+        _debug("maybe_load($self) caught error: $@\n") if DEBUG;
+        # Don't confuse "Can't locate Missing/Module/Used/In/Your/Module.pm"
+        # messages with "Can't locate Your/Module.pm".  The former is an 
+        # error that should be reported, the latter isn't.  We convert the
+        # class name to a regex that matches any non-word directory separators
+        # e.g. Your::Module => Your\W+Module
+        my $name = $self->{ name };
+        $name =~ s/\W+/\\W+/g;
+        _debug("checking to see if we couldn't locate $name\n") if DEBUG;
+        die $@ if $@ && $@ !~ /^Can't locate $name.*? in \@INC/;
         0;
     }
 }
@@ -738,7 +784,7 @@ sub hooks {
     croak("Invalid hooks specified: $args")
         unless ref $args eq HASH;
         
-    _debug("merging $self->{ name } hooks: ", join(', ', keys %$args), "\n") if $DEBUG;
+    _debug("merging $self->{ name } hooks: ", join(', ', keys %$args), "\n") if DEBUG;
 
     @$hooks{ keys %$args } = values %$args;
     
@@ -762,7 +808,7 @@ sub _autoload {
           || defined ${ $class.PKG.VERSION }            # TODO: ??
           || @{ $class.PKG.ISA }) {
 
-        _debug("autoloading $class\n") if $DEBUG;
+        _debug("autoloading $class\n") if DEBUG;
         $v = ${ $class.PKG.VERSION } ||= 0;             # TODO: ??
         local $SIG{__DIE__};
         eval "use $class";
@@ -775,6 +821,7 @@ sub _autoload {
 sub _debug {
     print STDERR @_;
 }
+
 
 1;
 
@@ -1431,6 +1478,11 @@ you can perform the more expensive variable lookup once when the object is
 initialised and cache the value(s) internally for other methods to use, as
 shown in the earlier examples with C<$self-E<gt>{ max_volume }>.
 
+=head2 bclass($pkg)
+
+This is an alias for L<class()> for those times where you've already got a
+method or subroutine called C<class> defined in your module.
+
 =head2 classes($pkg)
 
 This subroutine returns a list (in list context) or a reference to a list (in
@@ -1570,6 +1622,11 @@ method like so:
     }
 
 See the L<debug()> method and L<Badger::Debug> for further details.
+
+=head2 dumps
+
+This is a short-cut to the L<dumps|Badger::Debug/dumps> export hook in 
+L<Badger::Debug>.
 
 =head2 constant
 
@@ -2807,6 +2864,17 @@ C<Badger::Codecs>
 The name of the constants method, as used by the L<constants()> metho:
 C<Badger::Constants>
 
+=head2 DEBUG
+
+A comepile time constant defined from the value of the C<$DEBUG> package 
+variable.  To enable debugging in C<Badger::Class> set the C<$DEBUG>
+package variable I<before> you load C<Badger::Class>.  Also be aware that
+most other C<Badger> modules use C<Badger::Class> so you should set it 
+before you load any of them.
+
+    BEGIN { Badger::Class::DEBUG = 1 };
+    use Badger::Debug;
+
 =head2 DEBUGGER
 
 The name of the debug module, as used by the L<debug> export hook:
@@ -2918,7 +2986,7 @@ Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 1996-2008 Andy Wardley.  All Rights Reserved.
+Copyright (C) 1996-2009 Andy Wardley.  All Rights Reserved.
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.

@@ -22,6 +22,7 @@ use Badger::Class
     words     => 'ID EXCEPTION THROWS ERROR DECLINED before after',
     constant  => { 
         base_id => 'Badger',      # stripped from class name to make id
+        TRIAL   => 'Badger::Base::Trial',
     };
 
 use Badger::Exception;              # TODO: autoload
@@ -217,10 +218,15 @@ sub throw {
 }
 
 sub try {
-    my $self   = shift;
-    my $method = shift || return $self->error_msg( missing_to => method => 'try' );
-    eval { $self->$method(@_) }
-        || $self->decline($@);
+    my $self = shift;
+    if (@_) {
+        my $method = shift;     # || return $self->error_msg( missing_to => method => 'try' );
+        eval { $self->$method(@_) }
+            || $self->decline($@);
+    }
+    else {
+        return TRIAL->_bind_($self);
+    }
 }
 
 sub catch {
@@ -232,6 +238,7 @@ sub catch {
 sub throws {
     my $self  = shift;
     my $type  = reftype $self || BLANK;
+    my $class = class($self);
     my $throws;
     
     if (@_) {
@@ -239,7 +246,7 @@ sub throws {
         # else (classes and non-hash objects) use the $THROWS package var
         $throws = $type eq HASH
             ? ($self->{ THROWS } = shift)
-            :  $self->class->var(THROWS, shift);
+            :  $class->var(THROWS, shift);
     }
     elsif ($type eq HASH) {
         # we also look in $self->{ config } to see if a 'throws' was 
@@ -251,8 +258,8 @@ sub throws {
     
     # fall back on looking for any package variable in class / base classes
     return $throws 
-        || $self->class->any_var(THROWS)
-        || $self->class->id;
+        || $class->any_var(THROWS)
+        || $class->id;
 }
 
 sub exception {
@@ -265,14 +272,15 @@ sub exception {
         # like a hash when it is a hash-based object
         $emod = $type eq HASH
             ? ($self->{ EXCEPTION } = shift)
-            :  $self->class->var(EXCEPTION, shift);
+            : class($self)->var(EXCEPTION, shift);
     }
     elsif ($type eq HASH) {
         $emod = $self->{ EXCEPTION }
             ||= $self->{ config }
             &&  $self->{ config }->{ exception };
     }
-    return $emod || $self->class->any_var(EXCEPTION);
+    return $emod 
+        || class($self)->any_var(EXCEPTION);
 }
 
 sub fatal {
@@ -302,7 +310,7 @@ sub message {
     my $self   = shift;
     my $name   = shift 
         || $self->fatal("message() called without format name");
-    my $format = $self->class->hash_value( MESSAGES => $name )
+    my $format = class($self)->hash_value( MESSAGES => $name )
         || $self->fatal("message() called with invalid message type: $name");
     xprintf($format, @_);
 }
@@ -317,8 +325,16 @@ sub error_msg {
     $_[0]->error( message(@_) );
 }
 
+sub fatal_msg {
+    $_[0]->fatal( message(@_) );
+}
+
 sub decline_msg {
     $_[0]->decline( message(@_) );
+}
+
+sub debug_msg {
+    $_[0]->debug( message(@_) );
 }
 
 sub throw_msg {
@@ -359,7 +375,7 @@ class->methods(
         
         $on_event => sub {
             my $self  = shift;
-            my $class = $self->class;
+            my $class = class($self);
             my $list;
     
             if (ref $self && reftype $self eq HASH) {
@@ -447,6 +463,35 @@ sub _dispatch_handlers {
     return @args;
 }
     
+
+
+#-----------------------------------------------------------------------
+# Badger::Base::Trial - monadic object for $object->try operation
+#-----------------------------------------------------------------------
+
+package Badger::Base::Trial;
+our $AUTOLOAD;
+
+sub _bind_ {
+    my ($class, $object) = @_;
+    bless \$object, ref $class || $class;
+}
+
+sub AUTOLOAD {
+    my $self = shift;
+    my ($name) = ($AUTOLOAD =~ /([^:]+)$/ );
+    return if $name eq 'DESTROY';
+
+    # call method on target object in eval block, and downgrade
+
+    my $result = eval { $$self->$name(@_) };
+#    $$self->debug("result ($@): [", defined $result ? $result : '<undef>', ']');
+    return defined $result
+        ? $result
+        : $$self->decline($@);
+    
+    # TODO: catch missing error methods
+}
 
 
 1;
@@ -1071,6 +1116,11 @@ The L<reason()> method can be used to return the message generated.
     my $food = $forager->forage('nuts')
         || warn $forager->reason;       # No nuts found in the forest
 
+=head2 fatal_msg($message, @args)
+
+This is a wrapper around the L<fatal()> and L<message()> methods,
+similar to L<error_msg()> and co.
+
 =head2 throw($type, $info, %more_info)
 
 This method throws an exception by calling C<die()>.  It can be called
@@ -1163,6 +1213,16 @@ The error thrown can be retrieved using the C<reason()> method.
     my $result = $object->try( fetch => 'answer' )|| do {
         warn "Could not fetch answer: ", $object->reason;
         42;     # a sensible default
+    };
+
+If you call the C<try()> method without any arguments then it will return a
+C<Badger::Base::Trial> object as a wafer thin wrapper around the original 
+object.  Any methods called on this delegate object will be forwarded to 
+the original object, wrapped up in an C<eval> block to catch any errors
+thrown.
+
+    my $result = $object->try->fetch('answer') ||= do { 
+        ...
     };
 
 =head2 catch($type, $method, @args)
@@ -1345,6 +1405,29 @@ number where the message was generated.
         $self->debug('leaving example()');
     }
 
+=head2 debug_msg($message, @args)
+
+This is a wrapper around the L<debug()> and L<message()> methods,
+similar to L<warn_msg()>, L<error_msg()> and friends.
+
+    our $MESSAGES = {
+        here => 'You are in %s',
+    };
+    
+    sub example {
+        my $self = shift;
+        
+        $self->debug_msg( 
+            here => 'a maze of twisty little passages, all alike' 
+        ) if DEBUG;
+        
+        # ... some code ...
+        
+        $self->debug_msg( 
+            here => 'boat, floating on a sea of purest green' 
+        ) if DEBUG;
+    }
+    
 =head2 debug_up($level,$msg1,$msg2,...)
 
 Another debugging method mixed in from L<Badger::Debug>.  This is a wrapper
@@ -1618,7 +1701,7 @@ Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 1996-2008 Andy Wardley.  All Rights Reserved.
+Copyright (C) 1996-2009 Andy Wardley.  All Rights Reserved.
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.

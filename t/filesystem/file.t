@@ -18,7 +18,7 @@ use Badger::Filesystem 'FS';
 use Badger::Filesystem::File '@STAT_FIELDS';
 use Badger::Filesystem::Directory;
 use Badger::Test 
-    tests => 39,
+    tests => 54,
     debug => 'Badger::Filesystem::File',
     args  => \@ARGV;
 
@@ -81,6 +81,67 @@ is( $file3->text, "Hello World!\n", 'read text from newfile' );
 ok( $file3->touch, 'touched newfile' );
 
 
+#-----------------------------------------------------------------------
+# copy and move files
+#-----------------------------------------------------------------------
+
+my $file4 = $TDIR->file('testfiles', 'copyfile');
+ok( $file4, 'got copyfile' );
+if ($file4->exists) {
+    ok( $file4->delete, 'deleted copy file' );
+}
+else {
+    pass('no existing copy file');
+}
+ok( ! $file4->exists, 'copyfile does not exist' );
+ok( $file3->copy($file4), 'copied file' );
+ok( $file4->exists, 'copyfile now exists' );
+
+
+my $file5 = $TDIR->file('testfiles', 'movefile');
+ok( $file5, 'got movefile' );
+if ($file5->exists) {
+    ok( $file5->delete, 'deleted move file' );
+}
+else {
+    pass('no existing move file');
+}
+ok( ! $file5->exists, 'movefile does not exist' );
+ok( $file4->move($file5), 'moved file' );
+ok( $file5->exists, 'moved now exists' );
+ok( ! $file4->exists, 'copyfile no longer exists' );
+
+
+#-----------------------------------------------------------------------
+# copy with mkdir and mode parameters
+#-----------------------------------------------------------------------
+
+my $file6 = $TDIR->file('testfiles', 'forest', 'badger');
+
+ok( 
+    $file5->copy($file6, mkdir => 1, dir_mode => 0770, file_mode => 0660),
+    'copied file with mkdir'
+);
+ok( $file6->exists, 'file6 exists' );
+
+
+#-----------------------------------------------------------------------
+# copy from a filehandle
+#-----------------------------------------------------------------------
+
+my $file7 = $TDIR->file('testfiles', 'forest', 'ferret');
+
+ok( 
+    $file7->copy_from($file5->open),
+    'copied file from filehandle'
+);
+ok( $file7->exists, 'copied file created' );
+
+my $dir = $file6->parent;
+$file5->delete;
+$file6->delete;
+$file7->delete;
+$dir->delete;
 
 __END__
 test_file('file.t');

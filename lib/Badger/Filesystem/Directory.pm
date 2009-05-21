@@ -16,6 +16,7 @@ use Badger::Class
     version     => 0.01,
     debug       => 0,
     base        => 'Badger::Filesystem::Path',
+    dumps       => 'path volume directory name stats',
     constants   => 'ARRAY',
     constant    => {
         is_directory => 1,
@@ -439,11 +440,11 @@ sub-directories contained in this directory.
 
 =head1 AUTHOR
 
-Andy Wardley E<lt>abw@wardley.orgE<gt>
+Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 2005-2008 Andy Wardley. All rights reserved.
+Copyright (C) 2005-2009 Andy Wardley. All rights reserved.
 
 =head1 ACKNOWLEDGEMENTS
 

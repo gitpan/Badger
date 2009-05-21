@@ -16,7 +16,7 @@ use warnings;
 use lib qw( ./t/codec/lib ./codec/lib ./lib ../lib ../../lib );
 use Badger::Codecs;
 use Badger::Test 
-    tests => 34,
+    tests => 37,
     debug => 'Badger::Codecs',
     args  => \@ARGV;
 
@@ -137,6 +137,22 @@ $dec = decode($enc);
 ok( $dec, 'decoded data via imported base64 decode()' );
 
 is( $dec, $hello, 'transcoded hello via base64 encode()/decode()' );
+
+
+package Wibble2;
+use Badger::Test;
+
+# importing a single codec using list ref of arguments
+use Badger::Codecs 
+    [codec => 'storable'];
+    
+# codec() returns a Badger::Codec::URL object
+$enc = codec->encode({ message => $hello });
+ok( $enc, "encoded data via imported [codec => 'storable']" );
+
+$dec = codec->decode($enc)->{ message };
+ok( $dec, "decoded data via imported [codec => 'storable']" );
+is( $dec, $hello, 'transcoded hello via storable encode()/decode()' );
 
 
 #-----------------------------------------------------------------------

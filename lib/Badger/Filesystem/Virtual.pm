@@ -180,6 +180,7 @@ sub definitive_read {
         $full = $self->merge_paths($base, $path);
         $self->debug("looking for [$base] + [$path] => $full\n") if DEBUG;
         return $full if -e $full;
+        $self->debug("not found\n") if DEBUG;
     }
     return undef;
 }
@@ -196,7 +197,9 @@ sub read_directory {
         $full = $self->join_directory($base, $path);
         $self->debug("Opening directory: $full\n") if DEBUG;
         $dirh = IO::Dir->new($full)
-            || $self->error_msg( open_failed => directory => $full => $! );
+            || next;
+# Some directory may not exist, so ignore them
+#           || $self->error_msg( open_failed => directory => $full => $! );
         while (defined ($item = $dirh->read)) {
             push(@items, $item) unless $seen{ $item }++;
         }
@@ -445,11 +448,11 @@ See L<Dynamic Root Directories> for further information.
 
 =head1 AUTHOR
 
-Andy Wardley E<lt>abw@wardley.orgE<gt>
+Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 2005-2008 Andy Wardley. All rights reserved.
+Copyright (C) 2005-2009 Andy Wardley. All rights reserved.
 
 =head1 SEE ALSO
 

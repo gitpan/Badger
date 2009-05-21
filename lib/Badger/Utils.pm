@@ -51,10 +51,13 @@ our $DELEGATES;         # fill this from $HELPERS on demand
 
 
 __PACKAGE__->export_any(qw(
-    UTILS blessed is_object textlike params self_params plural xprintf dotid
+    UTILS blessed is_object numlike textlike params self_params plural xprintf dotid
 ));
 
 __PACKAGE__->export_fail(\&_export_fail);
+
+# looks_like_number() is such a mouthful.  I prefer numlike() to go with textlike()
+*numlike = \&Scalar::Util::looks_like_number;
 
 sub _export_fail {    
     my ($class, $target, $symbol, $more_symbols) = @_;
@@ -208,6 +211,11 @@ has an overloaded stringification operator.
     print $file;                                # example.txt
     print textlike $file ? 'ok' : 'not ok';     # ok
 
+=head2 numlike($item)
+
+This is an alias to the C<looks_like_number()> function defined in 
+L<Scalar::Util>.  
+
 =head2 params(@args)
 
 Method to coerce a list of named paramters to a hash array reference.  If the
@@ -310,7 +318,7 @@ Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 1996-2008 Andy Wardley.  All Rights Reserved.
+Copyright (C) 1996-2009 Andy Wardley.  All Rights Reserved.
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.

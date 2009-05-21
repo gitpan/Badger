@@ -22,7 +22,6 @@ use Badger::Class
     constants => 'PKG REFS SCALAR ARRAY HASH CODE REGEX DELIMITER',
     words     => 'DEBUG',
     import    => 'class',
-#    utils     => 'blessed reftype',
     constant  => {
         UNDEF => '<undef>',
     },
@@ -61,6 +60,7 @@ sub _export_debug_dumps {
     $self->export_symbol($target, dumper => sub {
         $_[0]->dump_hash($_[0],$_[1],$value);
     });
+    unshift(@$symbols, ':dump');
     return $self;
 }
 
@@ -950,7 +950,7 @@ Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 1996-2008 Andy Wardley.  All Rights Reserved.
+Copyright (C) 1996-2009 Andy Wardley.  All Rights Reserved.
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.

@@ -14,8 +14,10 @@ package Badger::Filesystem::File;
 
 use Badger::Class
     version     => 0.01,
-    debug       => 0,
     base        => 'Badger::Filesystem::Path',
+    debug       => 0,
+    dumps       => 'path volume directory name stats',
+    import      => 'class',
     constants   => 'ARRAY BLANK',
     constant    => {
         type    => 'File',
@@ -25,6 +27,8 @@ use Badger::Class
 use Badger::Filesystem::Path ':fields';
 
 *base = \&directory;
+*copy = \&copy_to;
+*move = \&move_to;
 
 sub init {
     my ($self, $config) = @_;
@@ -42,6 +46,11 @@ sub init {
     else {
         $self->error_msg( missing => 'path or name' );
     }
+    
+    my $opts = $self->{ options } = { };
+    $self->encoding( $config->{ encoding } )
+        if $config->{ encoding };
+        
     return $self;
 }
 
@@ -77,17 +86,37 @@ sub touch {
 
 sub open {
     my $self = shift;
-    $self->filesystem->open_file($self->{ path }, @_);
+    $self->filesystem->open_file($self->{ path }, @_, $self->{ options });
 }
 
 sub read {
     my $self = shift;
-    $self->filesystem->read_file($self->{ path }, @_);
+    $self->filesystem->read_file($self->{ path }, @_, $self->{ options });
 }
 
 sub write {
     my $self = shift;
-    $self->filesystem->write_file($self->{ path }, @_);
+    $self->filesystem->write_file($self->{ path }, @_, $self->{ options });
+}
+
+sub copy_to {
+    my $self = shift;
+    $self->filesystem->copy_file($self->{ path }, @_);
+}
+
+sub copy_from {
+    my $self = shift;
+    $self->filesystem->copy_file(shift, $self->{ path }, @_);
+}
+
+sub move_to {
+    my $self = shift;
+    $self->filesystem->move_file($self->{ path }, @_);
+}
+
+sub move_from {
+    my $self = shift;
+    $self->filesystem->move_file(shift, $self->{ path }, @_);
 }
 
 sub print {
@@ -97,7 +126,7 @@ sub print {
 
 sub append {
     my $self = shift;
-    $self->filesystem->append_file($self->{ path }, @_);
+    $self->filesystem->append_file($self->{ path }, @_, $self->{ options });
 }
 
 sub delete {
@@ -106,7 +135,8 @@ sub delete {
 }
 
 sub text {
-    my $text = shift->read(@_);
+    my $self = shift;
+    my $text = $self->read(@_, $self->{ options });
     # TODO: bless?
     return $text;
 }
@@ -115,7 +145,34 @@ sub accept {
     $_[1]->visit_file($_[0]);
 }
 
+sub encoding {
+    my $self = shift;
+    if (@_) {
+        my $layer = shift;
+        # be generous in what you accept...
+        $layer = ":$layer" unless $layer =~ /^:/;
+        $self->{ options }->{ encoding } = $layer;
+    }
+    return $self->{ options }->{ encoding };
+}
+
+class->methods(
+    map {
+        my $item = $_;              # lexical copy for closure
+        $item => sub {
+            my $self = shift;
+            # ...and strict in what you provide
+            $self->encoding(':' . $item); 
+            return $self;
+        }
+    }
+    qw( raw utf8 crlf bytes )
+);
+
+
 1;
+
+__END__
 
 =head1 NAME
 
@@ -210,6 +267,12 @@ of component names.
     my $file = File('path', 'to', 'file');
     my $file = File(['path', 'to', 'file']);
 
+You can specify a reference to a hash array of additional configuration items
+as the final argument.  At present, there is only one configuration option,
+C<encoding>, which you can use to specify the encoding of the file.
+
+    my $file = File('path' , 'to', 'file', { encoding => 'utf8' });
+
 =head1 METHODS
 
 In addition to the methods inherited from L<Badger::Filesystem::Path>, the
@@ -217,7 +280,7 @@ following methods are defined or re-defined.
 
 =head2 init(\%config)
 
-Customised initialisation method specific to files.
+Customised initialisation method specific to files.  
 
 =head2 volume() / vol()
 
@@ -297,6 +360,47 @@ it, and then closes the file again.
 
     $file->write("Hello World!\n");
 
+=head2 copy($to, %params) / copy_to($to, %params)
+
+This method copies the file to the new location specified by the first
+argument. It delegates to the L<copy_file()|Badger::Filesystem/copy_file()>
+method in L<Badger::Filesystem>.
+
+    $file->copy('/some/where/else');
+
+The destination can be specified as a file name, file object or file handle.
+An optional list of reference to a hash array of named parameters can follow.
+
+    $file->copy(
+        '/some/where/else' => {
+            mkdir     => 1,         # create intermediate directories
+            dir_mode  => 0775,      # permissions for created directories
+            file_mode => 0664,      # permissions for created file
+        }
+    );
+
+=head2 copy_from($from, %params)
+
+Like L<copy_to()> but working in reverse. 
+
+    $target_file->copy_from( $source_file );
+
+=head2 move($to, %params) / move_to($to, %params)
+
+This method moves the file to the new location specified by the first
+argument.  It delegates to the L<copy_file()|Badger::Filesystem/move_file()>
+method in L<Badger::Filesystem>.
+
+    $file->move('/some/where/else');
+
+Arguments are as per L<copy()>.
+
+=head2 move_from($from, %params)
+
+Like L<move_to()> but working in reverse. 
+
+    $target_file->move_from( $source_file );
+
 =head2 print(@content)
 
 This method concatentates all arguments into a single string which it then
@@ -336,13 +440,54 @@ filesystem object.  In the L<Badger::Filesystem::File> class, it calls the
 visitor L<visit_file()|Badger::Filesystem::Visitor/visit_file()> method,
 passing the C<$self> object reference as an argument.
 
+=head2 encoding($enc)
+
+This method can be used to get or set the encoding for the file.
+
+    $file->encoding(':utf8');
+
+The encoding will affect all operations that read data from, or write data
+to the file.
+
+=head2 utf()
+
+A method of convenience to set the file's encoding to UTF-8.  
+
+    $file->utf8;
+
+It has the same affect as calling the L<encoding()> method with an argument
+of C<:utf8>.  See C<perldoc -f binmode> for further information.
+
+    # same
+    $file->encoding(':utf8');
+
+
+The method returns the file object itself, so can be used in a chain.
+
+    $file->utf8->must_exist.
+
+=head2 bytes()
+
+Like C<utf8()>, this is a method of convenience to set the file encoding 
+to C<:bytes>.
+
+=head2 crlf()
+
+Like C<utf8()>, this is a method of convenience to set the file encoding 
+to C<:crlf>.
+
+=head2 raw()
+
+Like C<utf8()>, this is a method of convenience to set the file encoding 
+to C<:raw>.
+
 =head1 AUTHOR
 
-Andy Wardley E<lt>abw@wardley.orgE<gt>
+Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 2005-2008 Andy Wardley. All rights reserved.
+Copyright (C) 2005-2009 Andy Wardley. All rights reserved.
 
 =head1 ACKNOWLEDGEMENTS
 

@@ -122,6 +122,12 @@ Badger::Filesystem
   stored as a list of path nodes.
 
 
+Badger::Log
+-----------
+
+* Add code to detect Log::Dispatch objects and forward messages.
+
+
 Badger::Storage
 ---------------
 

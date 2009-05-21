@@ -232,8 +232,9 @@ sub must_exist {
 
     unless ($self->exists) {
         if (@_ && $_[0]) {
+            my $flag = shift;
             # true flag indicates we should attempt to create it
-            $self->create;
+            $self->create(@_);      # pass any other args, like dir file permission
         }
         else {
             return $self->error_msg( no_exist => $self->type, $self->{ path } );
@@ -266,6 +267,12 @@ sub stats {
     return wantarray 
         ? @$stats
         :  $stats;
+}
+
+sub chmod {
+    my $self = shift;
+    $self->filesystem->chmod_path($self->{ path }, @_);
+    return $self;
 }
 
 sub extension {
@@ -668,6 +675,12 @@ L<Badger::Filesystem::Directory> subclasses.
     $dir->create;                           # OK
     $file->create;                          # OK
 
+=head2 chmod($perms)
+
+This method changes the file permissions on a file or directory.
+
+    $file->chmod(0775);
+
 =head2 stat()
 
 Performs a filesystem C<stat> on the path and returns a list (in list
@@ -919,11 +932,11 @@ C<Badger::Filesystem::Path> base class.
 
 =head1 AUTHOR
 
-Andy Wardley E<lt>abw@wardley.orgE<gt>
+Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 2005-2008 Andy Wardley. All rights reserved.
+Copyright (C) 2005-2009 Andy Wardley. All rights reserved.
 
 =head1 ACKNOWLEDGEMENTS
 

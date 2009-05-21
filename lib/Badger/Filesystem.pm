@@ -39,7 +39,7 @@ use Badger::Class
     exports   => {
         any         => 'FS PATH FILE DIR DIRECTORY cwd getcwd rel2abs abs2rel',
         tags        => { 
-            types   => 'Path File Dir Directory Cwd',
+            types   => 'Path File Dir Directory Cwd Bin',
             dirs    => 'ROOTDIR UPDIR CURDIR',
         },
         hooks       => {
@@ -55,13 +55,14 @@ use Badger::Class
         delete_failed => 'Failed to delete %s %s: %s',
         bad_volume    => 'Volume mismatch: %s vs %s',
         bad_stat      => 'Nothing known about %s',
+        copy_failed   => 'Failed to %s file from %s to %s: %s',
     };
 
 use Badger::Filesystem::File;
 use Badger::Filesystem::Directory;
 
 #-----------------------------------------------------------------------
-# special export hook to make $Bin available from FindBin
+# special export hooks to make $Bin available from FindBin 
 #-----------------------------------------------------------------------
 
 sub _export_findbin_hook {
@@ -120,6 +121,8 @@ sub Path      { return @_ ? FS->path(@_)      : PATH      }
 sub File      { return @_ ? FS->file(@_)      : FILE      }
 sub Directory { return @_ ? FS->directory(@_) : DIRECTORY }
 sub Cwd       { FS->directory }
+sub Bin       { class(FINDBIN)->load; 
+                FS->directory($FindBin::Bin) }
 
 
 #-----------------------------------------------------------------------
@@ -361,6 +364,12 @@ sub stat_path {
         ?  @stats
         : \@stats;
 }
+
+sub chmod_path {
+    my $self = shift;
+    my $path = $self->definitive_write(shift);
+    chmod(shift, $path);
+}
     
 
 #-----------------------------------------------------------------------
@@ -399,6 +408,7 @@ sub open_file {
     my $self = shift;
     my $name = shift;
     my $mode = $_[0] || 'r';            # leave it in @_ for IO::File
+    my $opts = @_ && ref $_[-1] eq HASH ? pop(@_) : { };
     my $path = $mode eq 'r' 
         ? $self->definitive_read($name)
         : $self->definitive_write($name);
@@ -406,13 +416,19 @@ sub open_file {
     require IO::File;
     $self->debug("about to open file $path (", join(', ', @_), ")\n") if $DEBUG;
 
-    return IO::File->new($path, @_)
+    my $fh = IO::File->new($path, @_)
         || $self->error_msg( open_failed => file => $path => $! );
+
+    $fh->binmode( $opts->{ encoding } ) 
+        if $opts->{ encoding };
+
+    return $fh;
 }
 
 sub read_file {
     my $self = shift;
-    my $fh   = $self->open_file(shift, 'r');
+    my $opts = @_ && ref $_[-1] eq HASH ? pop(@_) : { };
+    my $fh   = $self->open_file(shift, 'r', $opts);
     return wantarray
         ? <$fh>
         : do { local $/ = undef; <$fh> };
@@ -420,7 +436,8 @@ sub read_file {
 
 sub write_file {
     my $self = shift;
-    my $fh   = $self->open_file(shift, 'w');
+    my $opts = @_ && ref $_[-1] eq HASH ? pop(@_) : { };
+    my $fh   = $self->open_file(shift, 'w', $opts);
     return $fh unless @_;           # return handle if no args
     print $fh @_;                   # or print args and close
     $fh->close;
@@ -429,11 +446,66 @@ sub write_file {
 
 sub append_file {
     my $self = shift;
-    my $fh   = $self->open_file(shift, 'a');
+    my $opts = @_ && ref $_[-1] eq HASH ? pop(@_) : { };
+    my $fh   = $self->open_file(shift, 'a', $opts);
     return $fh unless @_;           # return handle if no args
     print $fh @_;                   # or print args and close
     $fh->close;
     return 1;
+}
+
+
+sub copy_file {
+    shift->_file_copy( copy => @_ );
+}
+
+sub move_file {
+    shift->_file_copy( move => @_ );
+}
+
+sub _file_copy {
+    require File::Copy;
+
+    my ($self, $action, $from, $to, $params) 
+     = (shift, shift, shift, shift, params(@_));
+     
+    my $src    
+        = is_object(PATH, $from)    ? $from->definitive     # path object
+        : ref($from)                ? $from                 # file handle
+        : $self->definitive_read($from);                    # file path
+
+    my $dest
+        = is_object(PATH, $to)      ? $to->definitive       # as above
+        : ref($to)                  ? $to            
+        : $self->definitive_write($to);
+    
+    my $code 
+        = $action eq 'copy' ? \&File::Copy::copy
+        : $action eq 'move' ? \&File::Copy::move
+        : return $self->error( invalid => action => $action );
+
+    my $file;
+
+    unless (ref $dest) {
+        # NOTE: don't use $self->file($dest) because $self could be a 
+        # VFS and $dest is already a definitive path
+        $file = File($dest);
+        $file->directory->must_exist(
+            $params->{ mkdir    },
+            $params->{ dir_mode },
+        );
+    }
+
+    $code->($src, $dest)
+        || return $self->error_msg( copy_failed => $action, $from, $to, $! );
+
+    my $mode = $params->{ file_mode };
+       $mode = $params->{ mode } unless defined $mode;
+
+    $file->chmod($mode) 
+        if $file && defined $mode;
+
+    return $file || $dest;
 }
 
 
@@ -442,14 +514,14 @@ sub append_file {
 #-----------------------------------------------------------------------
 
 sub create_directory { 
-    my $self = shift;
-    my $path = $self->definitive_write(shift);
+    my $self   = shift;
+    my $path   = $self->definitive_write(shift);
 
     require File::Path;
 
     eval { 
         local $Carp::CarpLevel = 1;
-        File::Path::mkpath($path, @_) 
+        File::Path::mkpath($path, 0, @_) 
     } || return $self->error($@);
 } 
     
@@ -843,12 +915,23 @@ path as a single string or list of path components.
 This returns a L<Badger::Filesystem::Directory> object for the current
 working directory.
 
-    use Badger::Filesystem Cwd;
+    use Badger::Filesystem 'Cwd';
     
     print Cwd;              # /foraging/for/nuts/and/berries
     print Cwd->parent;      # /foraging/for/nuts/and
 
-=head2 cwd
+=head2 Bin()
+
+This returns a L<Badger::Filesystem::Directory> object for the directory
+in which the currently executing script is located.  It is a simple 
+wrapper around the value defined in L<$Bin>.
+
+    use Badger::Filesystem 'Bin';
+    
+    print Bin;              # /path/to/current/script
+    print Bin->parent;      # /path/to/current
+
+=head2 cwd()
 
 This returns a simple text string representing the current working directory.
 It is a a wrapper around the C<getcwd> function in L<Cwd>.  It also 
@@ -869,17 +952,19 @@ This is exactly the same as:
     use FindBin '$Bin';
     use lib "$Bin/../lib";
 
-The benefit is that you can use it in conjunction with other import options.
+One benefit is that you can use it in conjunction with other import options
+to save on a little typiing.  For example:
 
-    use Badger::Filesystem '$Bin Cwd File';
+    use Badger::Filesystem 'Cwd File $Bin';
 
 Compared to something like:
 
-    use FindBin '$Bin';
     use Cwd;
     use Path::Class;
+    use FindBin '$Bin';
+    use lib "$Bin/../lib";
 
-=head2 getcwd
+=head2 getcwd()
 
 This is a direct alias to the C<getcwd> function in L<Cwd>.
 
@@ -1185,6 +1270,12 @@ L<Badger::Filesystem::Path> for further details.
      15     file is executable by current process
      16     file is owned by current process
 
+=head2 chmod_path($path)
+
+Changes the file permissions on a path.
+
+    $fs->chmod_path('/path/to/file', 0755);
+
 =head1 FILE MANIPULATION METHODS
 
 =head2 create_file($path)
@@ -1255,6 +1346,37 @@ appended to the file.  The file is then closed and a true value returned
 to indicate success.  Errors are thrown as exceptions.
 
     $fs->append_file('/path/to/file', "Hello World\n", "Regards, Badger\n");
+
+=head2 copy_file($from, $to, %params)
+
+Copies a file from the C<$from> path to the C<$to> path, using L<File::Copy>
+
+    $fs->copy_file($from, $to);
+
+The C<$from> and C<$to> arguments can be file names, file objects, or file
+handles.
+
+An optional list or reference to a hash array of named parameters can follow
+the file names.  The C<mkdir> option can be set to indicate that 
+the destination direction should be created if it doesn't already exist,
+along with any intermediate directories.  
+
+    $fs->copy_file($from, $to, mkdir => 1);
+
+The C<dir_mode> parameter can be used to specify the octal file 
+permissions for any directories created.
+
+    $fs->copy_file($from, $to, 1, mkdir => 1, dir_mode => 0770);
+
+The C<file_mode> parameter (or C<mode> for short) can be used to specify the
+octal file permissions for the created file.
+
+    $fs->copy_file($from, $to, file_mode => 0644);
+
+=head2 move_file($from, $to, %params)
+
+Moves a file from the C<$from> path to the C<$to> path, using L<File::Copy>.
+The arguments are as per L<copy_file()>.
 
 =head1 DIRECTORY MANIPULATION METHODS
 
@@ -1425,11 +1547,14 @@ An alias for C<Badger::Filesystem::Directory>
 
 =head1 AUTHOR
 
-Andy Wardley E<lt>abw@wardley.orgE<gt>
+Andy Wardley L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 2005-2008 Andy Wardley. All rights reserved.
+Copyright (C) 2005-2009 Andy Wardley. All rights reserved.
+
+This module is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
 
 =head1 ACKNOWLEDGEMENTS
 
