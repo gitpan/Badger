@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Badger
-version:            0.05_02
+version:            0.05_03
 abstract:           Application programming toolkit
 author:
     - Andy Wardley <abw@wardley.org>

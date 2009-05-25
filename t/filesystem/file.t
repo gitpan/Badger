@@ -14,11 +14,12 @@
 use lib qw( ./lib ../lib ../../lib );
 use strict;
 use warnings;
-use Badger::Filesystem 'FS';
+use Badger::Timestamp 'TIMESTAMP';
+use Badger::Filesystem 'FS File';
 use Badger::Filesystem::File '@STAT_FIELDS';
 use Badger::Filesystem::Directory;
 use Badger::Test 
-    tests => 54,
+    tests => 58,
     debug => 'Badger::Filesystem::File',
     args  => \@ARGV;
 
@@ -59,6 +60,29 @@ is( $FILE->new(name => 'file.t')->name,     'file.t', 'got file using name param
 is( $FILE->new(path => 'file.t')->name,     'file.t', 'got file using path param' );
 is( $FILE->new({ name => 'file.t' })->name, 'file.t', 'got file using name param hash' );
 is( $FILE->new({ path => 'file.t' })->name, 'file.t', 'got file using path param hash' );
+
+
+#-----------------------------------------------------------------------
+# basename() - most of this is covered in t/filesystem/path.t
+# The only additional thing we need to check is that we get only the 
+# name of the file, not the whole path
+#-----------------------------------------------------------------------
+
+is( File('foo/bar.baz.html')->basename, 'bar.baz', 'multi-dotted basename' );
+
+
+#-----------------------------------------------------------------------
+# timestamps
+#-----------------------------------------------------------------------
+
+my $ts = $file->created_on;
+is( ref($ts), TIMESTAMP, 'created_on() returned a Badger::Timestamp' );
+
+$ts = $file->accessed_on;
+is( ref($ts), TIMESTAMP, 'accessed_on() returned a Badger::Timestamp' );
+
+$ts = $file->modified_on;
+is( ref($ts), TIMESTAMP, 'modified_on() returned a Badger::Timestamp' );
 
 
 #-----------------------------------------------------------------------

@@ -40,30 +40,61 @@ use Badger::Class
         missing  => 'No %s specified',
     };
 
+use Badger::Timestamp;
 use Badger::Filesystem;
 use Badger::Filesystem::Directory;
 
+
 our $FILESYSTEM  = 'Badger::Filesystem';
+our $TIMESTAMP   = 'Badger::Timestamp';
+our $MATCH_EXT   = qr/\.([^\.]+)$/;       # TODO: is this filesystem-specific?
 our @VDN_FIELDS  = qw( volume directory name );
 our @VD_FIELDS   = qw( volume directory );
+our @TS_FIELDS   = qw( accessed created modified );
 our @STAT_FIELDS = qw( device inode mode links user group device_type 
                        size accessed modified created block_size blocks
                        readable writeable executable owner );
+our $TS_FIELD_NO = {
+    # This starts out as an inclusion map indicating the fields that we're
+    # interested in adding timestamp support for.  The code below fills in 
+    # the correct values for offsets in the stats array
+    map { $_ => -1 }
+    @TS_FIELDS
+};
 
-# generate methods to access stat fields
+# generate methods to access stat fields: mode(), accessed(), created(), etc.
 my $n = 0;
 class->methods(
     map { 
-        my $m = $n++;       # new lexical variable to bind in closure
+        my $m = $n++;           # new lexical variable to bind in closure
+        $TS_FIELD_NO->{ $_ } &&= $m;
         $_ => sub { $_[0]->stats->[$m] }
-    } @STAT_FIELDS
+    } 
+    @STAT_FIELDS
 );
+
+# generate accessed_on(), created_on() and modified_on() methods to 
+# return Badger::Timestamp objects
+class->methods(
+    map { 
+        my $s = $_;             # new lexical variables to bind in closure
+        my $t = $s . '_on';     # method name and internal cache name
+        my $n = $TS_FIELD_NO->{ $s } || die "No timestamp field number for $s";
+        $t => sub { 
+            return $_[0]->{ $t } 
+                ||= $TIMESTAMP->new( $_[0]->stats->[$n] )
+        }
+    } 
+    @TS_FIELDS
+);
+
 
 # define some aliases
 *is_dir    = \&is_directory;
 *dir       = \&directory;
 *vol       = \&volume;     # goes up to 11
 *ext       = \&extension;  
+*base_name = \&basename;
 *up        = \&parent;
 *meta      = \&metadata;
 *canonical = \&absolute;
@@ -223,8 +254,6 @@ sub path_up {
 
 sub exists {
     shift->stat;
-#    my $self = shift;
- #   return $self->filesystem->stat_path($self->{ path })
 }
 
 sub must_exist {
@@ -275,10 +304,17 @@ sub chmod {
     return $self;
 }
 
+sub basename {
+    my $self = shift;
+    my $name = $self->name;
+    $name = $self->{ path } unless defined $name;
+    $name =~ s/$MATCH_EXT//g;
+    return $name;
+}
+
 sub extension {
     my $self = shift;
-    # TODO: is this filesystem specific?
-    return $self->{ path } =~ /\.([^\.]+)$/
+    return $self->{ path } =~ $MATCH_EXT
         ? $1
         : '';
 }
@@ -362,6 +398,8 @@ Badger::Filesystem::Path - generic fileystem path object
     $path->path;                    # current path
     $path->base;                    # parent directory or path itself
     $path->parent;                  # directory object for base
+    $path->extension                # filename .XXX extension
+    $path->basename                 # filename without .XXX extension
     $path->is_absolute;             # path is absolute
     $path->is_relative;             # path is relative
     $path->exists;                  # returns true/false
@@ -633,10 +671,6 @@ root directory ('/') will be returned.  A relative path with only one item
 (e.g. 'foo') is assumed to be relative to the current working directory
 which will be returned (e.g. '/path/to/current/dir').
 
-=head2 extension() / ext()
-
-Returns any file extension portion following the final C<.> in the path.
-
 =head2 exists()
 
 Returns true if the path exists in the filesystem (e.g. as a file, directory,
@@ -763,15 +797,34 @@ Returns the total size of the file in bytes.  See L<stat()>.
 Returns the time (in seconds since the epoch) that the file was last accessed.
 See L<stat()>.
 
+=head2 accessed_on
+
+Returns a L<Badger::Timestamp> object for the L<accessed()> time.
+
+    print $file->accessed_on->date;     # e.g. 2009/05/25
+
 =head2 modified
 
 Returns the time (in seconds since the epoch) that the file was last modified.
 See L<stat()>.
 
+=head2 modified_on
+
+Returns a L<Badger::Timestamp> object for the L<modified()> time.
+
+    print $file->modified_on->time;     # e.g. 12:19:42
+
 =head2 created
 
 Returns the time (in seconds since the epoch) that the file was created. See
 L<stat()>.
+
+=head2 created_on
+
+Returns a L<Badger::Timestamp> object for the L<created()> time.
+
+    print $file->created_on;            # e.g. 2009/05/25 12:19:42
+                                        # (via auto-stringification)
 
 =head2 block_size
 
@@ -929,6 +982,31 @@ C<Badger::Filesystem::Path> base class.
 
 Returns the file name portion of a path. This method does nothing in the
 C<Badger::Filesystem::Path> base class.
+
+=head2 extension() / ext()
+
+Returns any file extension portion following the final C<.> in the path.
+This works in the C<Badger::Filesystem::Path> base class by looking at the
+full path.
+
+    print Path('/foo/bar.txt')->extension;      # txt
+
+=head2 basename() / base_name()
+
+Returns the filename I<without> the file extension following the final 
+C<.> in the path.  This works (for some definition of "works") in the 
+C<Badger::Filesystem::Path> base class by looking at the path L<name()>,
+if defined, or the full C<path> if not.  Note that this will produce 
+unexpected results in some cases due to the fact that the base class 
+does not define a value for L<name()>.  e.g.
+
+    print Path('/foo/bar.txt')->basename;       # /foo/bar
+
+However, in most cases you would be using this through a
+L<Badger::Filesystem::File> subclass which will product the correct 
+results.
+
+    print File('/foo/bar.txt')->basename;       # bar
 
 =head1 AUTHOR
 
