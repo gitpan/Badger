@@ -13,6 +13,7 @@
 
 package Badger::Hub;
 
+use Badger::Debug ':dump';
 use Badger::Class
     version   => 0.01,
     debug     => 0,
@@ -45,15 +46,25 @@ our $AUTOLOAD;
 
 sub init {
     my ($self, $args) = @_;
+
     # We're looking for a specific 'config' item which the user can provide to
     # points to a master configuration object or class name.  We default to the 
     # value in the $CONFIG package variable, which in this case is Badger::Config,
     # but could be re-defined by a subclass to be something else.
     my $config = delete($args->{ config }) || $self->class->any_var('CONFIG');
     class($config)->load unless ref $config;
+
+    # merge all values in $CONFIG_ITEMS in with $args->{ items };
+    $args->{ items } = $self->class->list_vars( 
+        CONFIG_ITEMS => delete($args->{ config_items }), $args->{ items }
+    );
+
+    $self->debug("hub config items: ", $self->dump_data($args->{ items })) if DEBUG;
+    
     $config = $config->new($args) unless blessed $config;
     $self->{ config } = $config;
-    $self->debug("hub config: $self->{ config }\n") if $DEBUG;
+
+    $self->debug("hub config: $self->{ config }\n") if DEBUG;
     return $self;
 }
 
@@ -106,7 +117,7 @@ sub generate_component_method {
     $LOADED->{ $name } ||= class($comp)->load;
 
     unless (defined &{$class.PKG.$name}) {
-        $class->debug("generating $name() in $class\n") if $DEBUG;
+        $class->debug("generating $name() in $class\n") if DEBUG;
         *{$class.PKG.$name} = sub {
             my $self = shift;
             my $args = @_ && ref $_[0] eq HASH ? shift : { @_ };
@@ -133,12 +144,28 @@ sub generate_delegate_method {
     my ($m1, $m2) = ref $deleg eq ARRAY ? @$deleg : ($deleg, $name);
 
     unless (defined &{$class.PKG.$name}) {
-        $class->debug("generating $name() in $class\n") if $DEBUG;
+        $class->debug("generating $name() in $class\n") if DEBUG;
         *{$class.PKG.$name} = sub {
             shift->$m1->$m2(@_);
         };
     }
 }
+
+sub can {
+    my ($self, $name) = @_;
+    my $target;
+
+    if ($target = $self->SUPER::can($name)) {
+        return $target 
+    }
+    elsif ($target = $self->component($name)) {
+        return $self->generate_component_method( $name => $target );
+    }
+    elsif ($target = $self->delegate($name)) {
+        return $self->generate_delegate_method( $name => $target );
+    }
+    return undef;
+}   
 
 sub AUTOLOAD {
     my ($self, @args) = @_;
@@ -146,21 +173,14 @@ sub AUTOLOAD {
     return if $name eq 'DESTROY';
     my ($comp, $deleg);
     
-    $self->debug("AUTOLOAD $name\n") if $DEBUG;
+    $self->debug("AUTOLOAD $name\n") if DEBUG;
 
     # upgrade class methods to calls on prototype
     $self = $self->prototype unless ref $self;
     
-    if ($comp = $self->component($name)) {
-        $self->debug("Found component: $name\n") if $DEBUG;
-        $self->generate_component_method($name => $comp);
-        $self->debug("Calling $self->$name(", join(',', @args), ")\n") if $DEBUG;
-        return $self->$name(@args);
-    }
-    elsif ($deleg = $self->delegate($name)) {
-        $self->debug("Found delegate: $name\n") if $DEBUG;
-        $self->generate_delegate_method($name => $deleg);
-        $self->debug("Calling $self->$name(", join(',', @args), ")\n") if $DEBUG;
+    # give the can() method a chance to generate a component or delegate
+    # method for us
+    if ($self->can($name)) {
         return $self->$name(@args);
     }
 
@@ -195,7 +215,8 @@ sub configure {
         # $self->{ config } can be a hash ref with a $name item
         $config = $config->{ $name };
     }
-    elsif ($config && ($method = UNIVERSAL::can($self->{ config }, $name))) {
+#    elsif ($config && ($method = UNIVERSAL::can($self->{ config }, $name))) {
+    elsif ($config && ($method = $self->{ config }->can($name))) {
         # $self->{ config } can be an object with a $name method which we call
         $config = $method->($config);
     }
@@ -242,11 +263,11 @@ sub destroy {
         no strict 'refs';
         my $class = $self;
         $self = ${"$class\::PROTOTYPE"} || return;
-        $self->debug("deleting hub prototype from \$$class\::PROTOTYPE\n") if $DEBUG;
+        $self->debug("deleting hub prototype from \$$class\::PROTOTYPE\n") if DEBUG;
         ${"$class\::PROTOTYPE"} = undef;
     }
 
-    $self->debug("destroying hub: $self\n") if $DEBUG;
+    $self->debug("destroying hub: $self\n") if DEBUG;
 
     # empty content of $self to break any circular references that
     # we may have established with other items that point back to us
@@ -471,6 +492,15 @@ components.
 This method returns a single entry from the delegates table.
 
     print $hub->delegate('warm_fuzz');  # fuzzbox
+
+=head2 can()
+
+The method re-defines the C<can()> method that would otherwise be inherited
+from the L<UNIVERSAL> module.  In addition to returning references to methods
+already defined in the hub class, it will also create methods on demand that
+either creates a component (if the method has an entry in L<$COMPONENTS>) 
+or delegates to another method (if the method has an entry in L<$DELEGATES>).
+If none of the above apply then the C<can()> method returns C<undef>.
 
 =head2 destroy()
 

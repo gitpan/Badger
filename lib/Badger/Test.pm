@@ -10,13 +10,15 @@ use Badger::Class
     words     => 'DEBUG DEBUG_MODULES',
     exports   => {
         all   => 'plan ok is isnt like unlike pass fail     
-                  skip_some skip_rest skip_all',
+                  skip_some skip_rest skip_all manager',
+        after => \&_after_hook,
         hooks => {
-            lib      => [\&_lib_hook,  1],
-            skip     => [\&_skip_hook, 1],
+            lib      => [\&_lib_hook,    1],
+            skip     => [\&_skip_hook,   1],
+            if_env   => [\&_if_env_hook, 1],
             debug    => \&_debug_hook,
             map { $_ => \&_export_hook }
-            qw( manager summary colour color args tests )
+            qw( summary colour color args tests )
         },
     };
 
@@ -26,7 +28,7 @@ use Badger::Test::Manager;
 our $MANAGER   = 'Badger::Test::Manager';
 our $DEBUGGER  = 'Badger::Debug';
 our $EXCEPTION = 'Badger::Exception';
-our ($DEBUG, $DEBUG_MODULES);
+our ($ALL, $IF_ENV, $DEBUG, $DEBUG_MODULES);
 
 *color = \&colour;
 
@@ -37,6 +39,13 @@ sub _lib_hook {
 
 sub _skip_hook {
     $MANAGER->skip_all($_[3]);
+}
+
+sub _if_env_hook {
+    my $vars = $_[3];
+    $IF_ENV = $vars eq ARRAY
+        ? $vars
+        : [ split(DELIMITER, $vars) ]
 }
 
 sub _export_hook {
@@ -50,16 +59,40 @@ sub _debug_hook {
     my ($class, $target, $key, $symbols, $import) = @_;
     croak "You didn't specify any values for the 'debug' load option.\n" 
         unless @$symbols;
+        
 
     # define $DEBUG in caller
     no strict 'refs';
     *{ $target.PKG.DEBUG } = \$DEBUG;
+    *{ $target.PKG.DEBUG } = sub { $DEBUG };
 
     # set $DEBUG_MODULE in this class to contain the argument passed - a list
     # of class names to enable $DEBUG in when/if debugging is enabled
     my $modules = shift @$symbols;
     return unless $modules;           # zero/false for no debugging
     $class->debug_modules($modules);
+}
+
+sub _after_hook {
+    my ($class, $target) = @_;
+    
+    # See if we've got any constraints specified and assert that they're 
+    # met.  If the --all command line parameter is specified (which sets
+    # $ALL) then we run the tests regardless
+
+    if ($IF_ENV && ! $ALL) {
+        my $run   = 0;
+        my @names = @$IF_ENV;
+        
+        foreach my $var (@names) {
+            $run++, last if $ENV{$var};
+        }
+        unless ($run) {
+            my $name = pop(@names);
+            $name = join(' or ', join(', ', @names), $name);
+            $MANAGER->skip_all("Tests only apply for $name");
+        }
+    }
 }
 
 sub manager {
@@ -91,13 +124,18 @@ sub args {
             $self->colour(1);
         }
         elsif ($arg =~ /^(-d|--debug)$/) {
-            $self->debugging(1);
+            # physically set $DEBUG in this package (required for exported
+            # aliases) and also call debugging() for any subclasses to use
+            $self->debugging( $DEBUG = 1 );
         }
         elsif ($arg =~ /^(-s|--summary)$/) {
             $self->summary(1);
         }
         elsif ($arg =~ /^(-t|--trace)$/) {
             $self->trace(1);
+        }
+        elsif ($arg =~ /^(-a|--all)$/) {
+            $self->all(1);
         }
         elsif ($arg =~ /^(-h|--help)$/) {
             warn $self->help;
@@ -122,20 +160,26 @@ sub debug_modules {
 
 sub debugging {
     my $self    = shift;
-    my $flag    = $DEBUG = shift || 1;
+    my $flag    = $DEBUG = (@_ ? shift : 1);
     my $modules = $self->class->var(DEBUG_MODULES) || return;
     $DEBUGGER->debug_modules($modules);
 }
 
 sub trace {
     my $self = shift;
-    my $flag = shift || 1;
+    my $flag = @_ ? shift : 1;
     $EXCEPTION->trace($flag);
+}
+
+sub all {
+    my $self = shift;
+    $ALL = @_ ? shift : 1;
 }
 
 sub help {
     return <<END_OF_HELP;
 Options:
+    -a      --all               Run all tests (e.g. author/release tests)
     -d      --debug             Enable debugging
     -t      --trace             Enable stack tracing
     -c      --colour/--color    Enable colour output
@@ -207,7 +251,7 @@ those found in L<Test::Simple> or L<Test::More>.
 
 =head2 plan($tests)
 
-Specify how many tests you plan to run.  You can also sepcify this using
+Specify how many tests you plan to run.  You can also specify this using
 the L<tests> import hook.
 
     plan(1);
@@ -275,7 +319,7 @@ Skip a number of tests.
 
     skip_some(11, "Hugeness of object understated");
 
-=head2 skip_rest(,$reason)
+=head2 skip_rest($reason)
 
 Skip any remaining tests.
 
@@ -377,6 +421,13 @@ C<$DEBUG_MODULES> list.  It also sets the internal C<$DEBUG> flag.
 This method enables or disables stack tracing in the L<Badger::Exception>
 module.
 
+=head2 all($flag)
+
+This method enables or disables the internal C<$ALL> flag.  It is called 
+by the L<args()> method when the C<-a> or C<-all> command line argument is
+specified.  When the flag is set, it forces all tests to be run regardless
+of any L<if_env> conditions.
+
 =head2 help()
 
 This method returns the help text display when help is requested with the 
@@ -432,6 +483,25 @@ See the L<debug()> method.
     use Badger::Test 
         debug => 'My::Badger::Module Your Badger::Module',
         args  => \@ARGV;
+
+=head2 if_env
+
+This import hook can be used to automatically skip all the tests in a script
+unless a specific environment variable (or any from a list of variables) is
+defined. This is typically used to prevent certain test scripts from being run
+by end users (e.g. Pod coverage/kwalitee test scripts).
+
+    use Badger::Test
+        tests  => 5,
+        args   => \@ARGV,
+        if_env => 'RELEASE_TESTING AUTOMATED_TESTING';
+
+In this example the tests will only be run if either of the C<RELEASE_TESTING>
+or C<AUTOMATED_TESTING> environment variables is set. However, specifying the
+C<-a> or C<--all> command line option will force all tests to be run
+regardless.
+
+    $ perl t/pod_coverage.t --all
 
 =head1 PACKAGE VARIABLES
 

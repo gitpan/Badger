@@ -20,7 +20,7 @@ use Badger::Base;
 use Badger::Test 
     debug => 'Badger::Debug',
     args  => \@ARGV,
-    tests => 30;
+    tests => 34;
     
 
 #-----------------------------------------------------------------------
@@ -57,10 +57,10 @@ $SIG{__DIE__} = sub {
 my $obj = Badger::Base->new();
 
 $obj->debug("Hello World\n");
-like( $dbgmsg, qr/\[Badger::Base \(main\) line \d\d\] Hello World/, 'Hello World' );
+like( $dbgmsg, qr/\[main \(Badger::Base\) line \d\d\] Hello World/, 'Hello World' );
 
 $obj->debug('Hello ', "Badger\n");
-like( $dbgmsg, qr/\[Badger::Base \(main\) line \d\d\] Hello Badger/, 'Hello Badger' );
+like( $dbgmsg, qr/\[main \(Badger::Base\) line \d\d\] Hello Badger/, 'Hello Badger' );
 
 
 #-----------------------------------------------------------------------
@@ -211,4 +211,70 @@ is( My::Debugger3->debug_dynamic_status, 'off', 'debugger3 dynamic debugging is 
 ok( Badger::Debug->export('foo', '$DEBUG' => 1), 'exported from Badger::Debug' );
 
 
+#-----------------------------------------------------------------------
+# test debug_at();
+#-----------------------------------------------------------------------
 
+package Badger::Test::Debug::At;
+
+use Badger::Debug ':debug';
+use Badger::Class
+    base  => 'Badger::Base',
+    debug => 1;
+
+package main;
+
+my $at = Badger::Test::Debug::At->new;
+is(
+    $at->debug_at(
+        { where => 'At the edge of time', line  => 420 }, 
+        'Flying sideways'
+    ),
+    "[At the edge of time line 420] Flying sideways\n",
+    'I can fly sideways through time'
+);
+
+#-----------------------------------------------------------------------
+# change message format
+#-----------------------------------------------------------------------
+
+package Badger::Test::Debug::Format;
+
+use Badger::Debug ':debug';
+use Badger::Class
+    base  => 'Badger::Base',
+    debug => 1;
+
+package main;
+use Badger::Timestamp 'Now';
+
+my $format = Badger::Test::Debug::Format->new;
+
+{
+    local $Badger::Debug::FORMAT = '<pkg> <class> <where> <line> <msg>';
+
+    is( 
+        $format->debug_at(
+            { where => 'backside', line  => 540 }, 
+            'method air'
+        ),
+        "main Badger::Test::Debug::Format backside 540 method air\n",
+        'backside 540 method air'
+    );
+    is( 
+        $format->debug_at(
+            { where => 'frontside', format => '<where> <msg>' }, 
+            'boardslide'
+        ),
+        "frontside boardslide\n",
+        'frontside boardslide'
+    );
+
+    local $Badger::Debug::FORMAT = '<msg> on <date> at <time>';
+    my $date = Now->date;
+    like( 
+        $format->debug('beep'),
+        qr/beep on $date at \d\d/,
+        'message format with date and time'
+    );
+}

@@ -53,7 +53,6 @@ BEGIN {
     *DEBUG = sub() { $DEBUG };
 }
 
-
 #-----------------------------------------------------------------------
 # Methods that we delegate to other modules.  The module name is 
 # determined by calling the constant method (first argument on RHS
@@ -75,6 +74,7 @@ our $DELEGATES = {
     mutators     => [ METHODS    => 'mutators'       ],
     slots        => [ METHODS    => 'slots'          ],
     init_method  => [ METHODS    => 'initialiser'    ],
+    auto_can     => [ METHODS    => 'auto_can'       ],
     utils        => [ UTILS      => 'export'         ],
     vars         => [ VARS       => 'vars'           ],
 };
@@ -97,7 +97,7 @@ our $EXPORT_HOOKS = {
         base uber mixin mixins version constant constants words vars 
         config exports throws messages utils codec codecs filesystem
         hooks methods slots accessors mutators get_methods set_methods 
-        hash_methods init_method overload as_text is_true
+        hash_methods init_method auto_can overload as_text is_true
     )
 };
 
@@ -250,7 +250,6 @@ class(CLASS)->methods(
     }
     keys %$DELEGATES
 );
-
 
 
 #-----------------------------------------------------------------------
@@ -807,7 +806,6 @@ sub _autoload {
     unless ( defined ${ $class.PKG.LOADED  } 
           || defined ${ $class.PKG.VERSION }            # TODO: ??
           || @{ $class.PKG.ISA }) {
-
         _debug("autoloading $class\n") if DEBUG;
         $v = ${ $class.PKG.VERSION } ||= 0;             # TODO: ??
         local $SIG{__DIE__};
@@ -936,6 +934,8 @@ For example, instead of writing something like this:
 
     package Your::Module;
     
+    use strict;
+    use warnings;
     use base qw( Exporter Class::Base Class::Accessor::Fast );
     use constant {
         name => 'Badger',
@@ -956,19 +956,19 @@ You can write something like this:
     package Your::Module;
     
     use Badger::Class 
-        base        => 'Badger::Base',
-        version     => 3.14,
-        debug       => 0,
-        get_methods => 'nuts berries',
-        utils       => 'blessed',
-        constant    => {
-            name => 'Badger',
-            foo  => 'Nuts',
-            bar  => 'Berries',
+        base      => 'Badger::Base',
+        version   => 3.14,
+        debug     => 0,
+        accessors => 'nuts berries',
+        utils     => 'blessed',
+        constant  => {
+            name  => 'Badger',
+            foo   => 'Nuts',
+            bar   => 'Berries',
         },
-        exports     => { 
-            all => 'name',
-            any => 'nuts berries',
+        exports   => { 
+            all   => 'name',
+            any   => 'foo bar',
         };
 
 There are a number of benefits to this approach. First and foremost, it allows
@@ -2022,6 +2022,42 @@ See the L<init_method()> method and the
 L<initialiser()|Badger::Class::Methods/initialiser()> method in
 L<Badger::Class::Methods> for further information.
 
+=head2 auto_can
+
+This can be used to define a method that automatically generates other 
+methods on demand.  
+
+    use Badger::Class
+        auto_can => 'auto_can';
+        
+    sub auto_can {
+        my ($self, $name) = @_;
+        
+        return sub {
+            my $self = shift;
+            print "This is the auto-generated $name method";
+        }
+    }
+
+Now when you call an undefined method it will be generated on demand:
+
+    $object->foo;       # This is the auto-generated foo method
+
+Your method doesn't have to be called C<auto_can()>.  You can call it 
+anything you like.
+
+    use Badger::Class
+        auto_can => 'method_maker';
+        
+    sub method_maker {
+        my ($self, $name) = @_;
+
+        #...etc...
+    }
+
+See the L<auto_can()> method in L<Badger::Class::Methods> for further
+information.
+
 =head2 overload
 
 This can be used as a shortcut to the C<overload> module to overload
@@ -2871,7 +2907,7 @@ C<Badger::Constants>
 
 =head2 DEBUG
 
-A comepile time constant defined from the value of the C<$DEBUG> package 
+A compile time constant defined from the value of the C<$DEBUG> package 
 variable.  To enable debugging in C<Badger::Class> set the C<$DEBUG>
 package variable I<before> you load C<Badger::Class>.  Also be aware that
 most other C<Badger> modules use C<Badger::Class> so you should set it 

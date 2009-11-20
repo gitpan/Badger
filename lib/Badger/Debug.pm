@@ -27,7 +27,8 @@ use Badger::Class
     },
     exports   => {
         tags  => {
-            debug => 'debugging debug debug_up debug_caller debug_args',
+            debug => 'debugging debug debugf debug_up debug_at debug_caller 
+                      debug_args',
             dump  => 'dump dump_data dump_data_inline
                       dump_ref dump_hash dump_list dump_text'
         },
@@ -45,9 +46,10 @@ use Badger::Class
 our $PAD       = '    ';
 our $MAX_TEXT  = 48;
 our $MAX_DEPTH = 3;     # prevent runaways in debug/dump
-our $FORMAT    = "[<class> line <line>] <msg>"  
+our $FORMAT    = "[<where> line <line>] <msg>"  
     unless defined $FORMAT;
-our $CALLER_UP = 0;     # hackola to allow debug() to use a different caller
+our $CALLER_UP = 0;      # hackola to allow debug() to use a different caller
+our $CALLER_AT = { };    # ditto
 our $DEBUG     = 0 unless defined $DEBUG;
 
 
@@ -149,24 +151,50 @@ sub debug {
     my $self   = shift;
     my $msg    = join('', @_),
     my $class  = ref $self || $self;
-    my $format = $FORMAT;
+    my $format = $CALLER_AT->{ format } || $FORMAT;
     my ($pkg, $file, $line) = caller($CALLER_UP);
-    $class .= " ($pkg)" unless $class eq $pkg;
-    $msg .= "\n" unless $msg =~ /\n$/;
+    my $where  = ($class eq $pkg) ? $class : $pkg . " ($class)";
+    
+    # We load this dynamically because it uses Badger::Debug and we don't
+    # want to end up in a gruesome birth spiral 
+    require Badger::Timestamp;
+    my $now  = Badger::Timestamp->now;
+
     my $data = {
         msg   => $msg,
+        where => $where,
         class => $class,
         file  => $file,
         line  => $line,
+        pkg   => $pkg,
+        date  => $now->date,
+        time  => $now->time,
+        %$CALLER_AT,
     };
-    $format =~ s/<(\w+)>/defined $data->{ $1 } ? $data->{ $1 } : "<$1 undef>"/eg;
+    $format  =~ s/<(\w+)>/defined $data->{ $1 } ? $data->{ $1 } : "<$1 undef>"/eg;
+    $format .= "\n" unless $format =~ /\n$/;
+    
     print STDERR $format;
+}
+
+
+sub debugf {
+    local $CALLER_UP = 1;
+    shift->debug( sprintf(@_) );
 }
 
 
 sub debug_up {
     my $self = shift;
     local $CALLER_UP = shift;
+    $self->debug(@_);
+}
+
+
+sub debug_at {
+    my $self = shift;
+    local $CALLER_AT = shift;
+    local $CALLER_UP = 1;
     $self->debug(@_);
 }
 
@@ -340,7 +368,7 @@ sub enable_colour {
 
     # colour the debug format
     $FORMAT 
-         = cyan('[<class> line <line>]')
+         = cyan('[<where> line <line>]')
          . yellow(' <msg>');
 
     # exceptions are in red
@@ -772,6 +800,12 @@ was called.
 At some point in the future this will be extended to allow you to tie in
 debug hooks, e.g. to forward to a logging module.
 
+=head2 debugf($format, $arg1, $arg2, ...)
+
+This method provides a C<printf()>-like wrapper around L<debug()>.
+
+    $object->debugf('%s is %s', e => 2.718);    # e is 2.718
+
 =head2 debug_up($n, $msg1, $msg2, ...)
 
 The L<debug()> method generates a message showing the file and line number
@@ -801,6 +835,47 @@ reporting the line number in the C<trace()> subroutine (which would be the
 case if we called C<debug(...)> or C<debug_up(1,...)>), it will correctly
 reporting the line number of the call to C<trace()> in the C<parse()> 
 method.
+
+=head2 debug_at($info, $message)
+
+This method is a wrapper around L<debug()> that allows you to specify a
+different location to be added to the message generated.
+
+    $at->debug_at(
+        { 
+            where => 'At the edge of time', 
+            line  => 420 
+        }, 
+        'Flying sideways'
+    );
+
+This generates the following debug message:
+
+    [At the edge of time line 420] Flying sideways
+
+Far out, man!
+
+You can change the L<$FORMAT> package variable to define a different message
+structure.  As well as the pre-defined placeholders (see the L<$FORMAT> 
+documentation) you can also define your own custom placeholders like
+C<E<lt>serverE<gt>> in the following example.
+
+    $Badger::Debug::FORMAT = '<server>: <msg> at line <line> of <file>';
+
+You must then provide values for the additional placeholder in the C<$info>
+hash array when you call the L<debug_at()> method.
+
+    $at->debug_at(
+        { server => 'Alpha' },
+        'Normality is resumed'
+    );
+
+You can also specify a custom format in the C<$info> hash array.
+
+    $at->debug_at(
+        { format => '<msg> at line <line> of <file>' }, 
+        'Normality is resumed'
+    );
 
 =head2 debug_caller()
 
@@ -929,11 +1004,30 @@ Enables colourful debugging and error messages.
 The L<debug()> method uses the message format in the C<$FORMAT>
 package variable to generate debugging messages.  The default value is:
 
-    [<class> line <line>] <msg>
+    [<where> line <line>] <msg>
 
-The C<E<lt>classE<gt>>, C<E<lt>lineE<gt>> and C<E<lt>msgE<gt>> markers
+The C<E<lt>where<gt>>, C<E<lt>lineE<gt>> and C<E<lt>msgE<gt>> markers
 denote the positions where the class name, line number and debugging 
-message are inserted.
+message are inserted.  You can embed any of the following placeholders 
+into the message format:
+
+    msg     The debugging message
+    file    The name of the file where the debug() method was called from
+    line    The line number that it was called from
+    pkg     The package that it was called from
+    class   The class name of the object that the method was called against
+    where   A summary of the package and class
+    date    The current date
+    time    The current time
+
+If the C<class> is the same as the C<pkg> then C<where> will contain the same
+value. If they are different then C<where> will be set equivalent to "<pkg>
+(<class>)". This is the case when the L<debug()> method is called from a base
+class method (C<pkg> will be the base class name from where the call was made)
+against a subclass object (C<class> will be the subclass name). 
+
+See also the L<debug_at()> method which allows you to specify a custom format
+and/or additional placeholder values.
 
 =head2 $MAX_DEPTH
 

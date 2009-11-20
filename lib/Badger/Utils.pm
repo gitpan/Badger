@@ -17,8 +17,10 @@ use warnings;
 use base 'Badger::Exporter';
 use File::Path;
 use Scalar::Util qw( blessed );
-use Badger::Constants 'HASH PKG DELIMITER';
-use Badger::Debug ':dump';
+use Badger::Constants 'HASH PKG DELIMITER BLANK';
+use Badger::Debug 
+    import  => ':dump',
+    default => 0;
 use overload;
 use constant {
     UTILS  => 'Badger::Utils',
@@ -28,8 +30,9 @@ use constant {
 };
 
 our $VERSION  = 0.01;
-our $DEBUG    = 0 unless defined $DEBUG;
+#our $DEBUG    = 0 unless defined $DEBUG;
 our $ERROR    = '';
+our $WARN     = sub { warn @_ };  # for testing - see t/core/utils.t
 our $MESSAGES = { };
 our $HELPERS  = {       # keep this compact in case we don't need to use it
     'Digest::MD5'       => 'md5 md5_hex md5_base64',
@@ -49,16 +52,22 @@ our $HELPERS  = {       # keep this compact in case we don't need to use it
     'Badger::Logic'     => 'LOGIC Logic',
 };
 our $DELEGATES;         # fill this from $HELPERS on demand
+our $RANDOM_NAME_LENGTH = 32;
 
 
 __PACKAGE__->export_any(qw(
-    UTILS blessed is_object numlike textlike params self_params plural xprintf dotid
+    UTILS blessed is_object numlike textlike params self_params plural 
+    xprintf dotid random_name camel_case CamelCase
 ));
 
 __PACKAGE__->export_fail(\&_export_fail);
 
 # looks_like_number() is such a mouthful.  I prefer numlike() to go with textlike()
 *numlike = \&Scalar::Util::looks_like_number;
+
+# it would be too confusing not to have this alias
+*CamelCase = \&camel_case;
+
 
 sub _export_fail {    
     my ($class, $target, $symbol, $more_symbols) = @_;
@@ -94,12 +103,47 @@ sub textlike($) {
 }
 
 sub params {
+    # enable $DEBUG to track down calls to params() that pass an odd number 
+    # of arguments, typically when the rhs argument returns an empty list, 
+    # e.g. $obj->foo( x => this_returns_empty_list() )
+    my @args = @_;
+    local $SIG{__WARN__} = sub {
+        odd_params(@args);
+    } if DEBUG;
+
     @_ && ref $_[0] eq HASH ? shift : { @_ };
 }
 
 sub self_params {
+    my @args = @_;
+    local $SIG{__WARN__} = sub {
+        odd_params(@args);
+    } if DEBUG;
+    
     (shift, @_ && ref $_[0] eq HASH ? shift : { @_ });
 }
+
+sub odd_params {
+    my $method = (caller(2))[3];
+    $WARN->(
+        "$method() called with an odd number of arguments: ", 
+        join(', ', map { defined $_ ? $_ : '<undef>' } @_),
+        "\n"
+    );
+    my $i = 3;
+    while (1) {
+        my @info = caller($i);
+        last unless @info;
+        my ($pkg, $file, $line, $sub) = @info;
+        $WARN->(
+            sprintf(
+                "%4s: Called from %s in %s at line %s\n",
+                '#' . ($i++ - 2), $sub, $file, $line
+            )
+        );
+    }
+}
+    
 
 sub plural {
     my $name = shift;
@@ -132,6 +176,30 @@ sub dotid {
     my $text = shift;       # munge $text to canonical lower case and dotted form
     $text =~ s/\W+/./g;     # e.g. Foo::Bar ==> Foo.Bar
     return lc $text;        # e.g. Foo.Bar  ==> foo.bar
+}
+
+sub camel_case {
+    join(
+        BLANK, 
+        map {
+            map { ucfirst $_ } 
+            split '_'
+        } 
+        @_
+    );
+}
+
+sub random_name {
+    my $length = shift || $RANDOM_NAME_LENGTH;
+    my $name   = '';
+    require Digest::MD5;
+    
+    while (length $name < $length) {
+        $name .= Digest::MD5::md5_hex(
+            time(), rand(), $$, { }, @_
+        );
+    }
+    return substr($name, 0, $length);
 }
 
 sub _debug {
@@ -231,7 +299,7 @@ L<Scalar::Util>.
 
 =head2 params(@args)
 
-Method to coerce a list of named paramters to a hash array reference.  If the
+Method to coerce a list of named parameters to a hash array reference.  If the
 first argument is a reference to a hash array then it is returned.  Otherwise
 the arguments are folded into a hash reference.
 
@@ -239,6 +307,22 @@ the arguments are folded into a hash reference.
     
     params({ a => 10 });            # { a => 10 }
     params( a => 10 );              # { a => 10 }
+
+Pro Tip: If you're getting warnings about an "Odd number of elements in
+anonymous hash" then try enabling debugging in C<Badger::Utils>. To do this,
+add the following to the start of your program before you've loaded
+C<Badger::Utils>:
+
+    use Badger::Debug
+        modules => 'Badger::Utils'
+
+When debugging is enabled in C<Badger::Utils> you'll get a full stack 
+backtrace showing you where the subroutine was called from.  e.g.
+
+    Badger::Utils::self_params() called with an odd number of arguments: <undef>
+    #1: Called from Foo::bar in /path/to/Foo/Bar.pm at line 210
+    #2: Called from Wam::bam in /path/to/Wam/Bam.pm at line 420
+    #3: Called from main in /path/to/your/script.pl at line 217
 
 =head2 self_params(@args)
 
@@ -251,6 +335,40 @@ the argument list.
         my ($self, $params) = self_params(@_);
         # do something...
     }
+
+If you enable debugging in C<Badger::Utils> then you'll get a stack backtrace
+in the event of an odd number of parameters being passed to this function.
+See L<params()> for further details.
+
+=head2 odd_params(@_)
+
+This is an internal function used by L<params()> and L<self_params()> to 
+report any attempt to pass an odd number of arguments to either of them.
+It can be enabled by setting C<$Badger::Utils::DEBUG> to a true value.
+
+    use Badger::Utils 'params';
+    $Badger::Utils::DEBUG = 1;
+    
+    my $hash = params( foo => 10, 20 );    # oops!
+
+The above code will raise a warning showing the arguments passed and a 
+stack backtrace, allowing you to easily track down and fix the offending
+code.  Apart from obvious typos like the above, this is most likely to 
+happen if you call a function or methods that returns an empty list.  e.g.
+
+    params(
+        foo => 10,
+        bar => get_the_bar_value(),
+    );
+
+If C<get_the_bar_value()> returns an empty list then you'll end up with an
+odd number of elements being passed to C<params()>.  You can correct this
+by providing C<undef> as an alternative value.  e.g.
+
+    params(
+        foo => 10,
+        bar => get_the_bar_value() || undef,
+    );
 
 =head2 plural($noun)
 
@@ -310,6 +428,16 @@ suitable for feeding into C<require()>
 
     print module_file('My::Module');     # My/Module.pm
 
+=head2 camel_case($string) / CamelCase($string)
+
+Converts a lower case string where words are separated by underscores (e.g.
+C<like_this_example>) into CamelCase where each word is capitalised and words
+are joined together (e.g. C<LikeThisExample>).
+
+According to Perl convention (and personal preference), we use the lower case
+form wherever possible. However, Perl's convention also dictates that module
+names should be in CamelCase.  This function performs that conversion.
+
 =head2 dotid($text)
 
 The function returns a lower case representation of the text passed as
@@ -324,6 +452,15 @@ embedding positional parameters.
 
     xprintf('The <2> sat on the <1>', 'mat', 'cat');
     xprintf('The <1> costs <2:%.2f>', 'widget', 11.99);
+
+=head2 random_name($length,@data)
+
+Generates a random name of maximum length C<$length> using any additional 
+seeding data passed as C<@args>.  If C<$length> is undefined then the default
+value in C<$RANDOM_NAME_LENGTH> (32) is used.
+
+    my $name = random_name();
+    my $name = random_name(64);
 
 =head1 AUTHOR
 

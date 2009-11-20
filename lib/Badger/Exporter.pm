@@ -16,44 +16,49 @@
 
 package Badger::Exporter;
 
+use Carp;
 use strict;
 use warnings;
-use Carp;
 use constant {
-    ALL          => 'all',             # Alas, we can't pull these in from 
-    NONE         => 'none',            # Badger::Constants because it's a 
-    DEFAULT      => 'default',         # subclass of Badger::Exporter which
-    IMPORT       => 'import',          # gives us a chicken-and-egg dependency
-    IMPORTS      => 'imports',         # problem.  We could pull them into 
-    HOOKS        => 'hooks',           # Badger::Constants though because that's
-    ARRAY        => 'ARRAY',           # a subclass... hmmm....
-    HASH         => 'HASH',      
-    CODE         => 'CODE',
-    EXPORT_ALL   => 'EXPORT_ALL',
-    EXPORT_ANY   => 'EXPORT_ANY',
-    EXPORT_TAGS  => 'EXPORT_TAGS',
-    EXPORT_FAIL  => 'EXPORT_FAIL',
-    EXPORT_HOOKS => 'EXPORT_HOOKS',
-    EXPORTABLES  => 'EXPORTABLES',
-    ISA          => 'ISA',
-    REFS         => 'refs',
-    ONCE         => 'once',
-    PKG          => '::',
-    DELIMITER    => qr/(?:,\s*)|\s+/,  # match a comma or whitespace
-    MISSING      => "Missing value for the '%s' option%s",
-    BAD_HOOK     => "Invalid export hook handler specified for the '%s' option: %s",
-    WANTED       => " (%s wanted, %s specified)",
-    UNDEFINED    => " (argument %s of %s is undefined)",
+    ALL             => 'all',           # Alas, we can't pull these in from 
+    NONE            => 'none',          # Badger::Constants because it's a 
+    DEFAULT         => 'default',       # subclass of Badger::Exporter which
+    IMPORT          => 'import',        # gives us a chicken-and-egg dependency
+    IMPORTS         => 'imports',       # problem.We could pull them into 
+    HOOKS           => 'hooks',         # Badger::Constants though because 
+    ARRAY           => 'ARRAY',         # that's a subclass... hmmm....
+    HASH            => 'HASH',      
+    CODE            => 'CODE',
+    EXPORT_ALL      => 'EXPORT_ALL',
+    EXPORT_ANY      => 'EXPORT_ANY',
+    EXPORT_TAGS     => 'EXPORT_TAGS',
+    EXPORT_FAIL     => 'EXPORT_FAIL',
+    EXPORT_HOOKS    => 'EXPORT_HOOKS',
+    EXPORT_BEFORE   => 'EXPORT_BEFORE',
+    EXPORT_AFTER    => 'EXPORT_AFTER',
+    EXPORTABLES     => 'EXPORTABLES',
+    ISA             => 'ISA',
+    REFS            => 'refs',
+    ONCE            => 'once',
+    PKG             => '::',
+    DELIMITER       => qr/(?:,\s*)|\s+/,  # match a comma or whitespace
+    MISSING         => "Missing value for the '%s' option%s",
+    BAD_HANDLER     => "Invalid export %s handler specified: %s",
+    BAD_HOOK        => "Invalid export hook handler specified for the '%s' option: %s",
+    WANTED          => " (%s wanted, %s specified)",
+    UNDEFINED       => " (argument %s of %s is undefined)",
 };
 
 our $VERSION   = 0.01;
 our $DEBUG     = 0 unless defined $DEBUG;
 our $HANDLERS  = {
-    all   => \&export_all,
-    any   => \&export_any,
-    tags  => \&export_tags,
-    hooks => \&export_hooks,
-    fail  => \&export_fail,
+    all     => \&export_all,
+    any     => \&export_any,
+    tags    => \&export_tags,
+    hooks   => \&export_hooks,
+    fail    => \&export_fail,
+    before  => \&export_before,
+    after   => \&export_after,
 };
 
 
@@ -62,6 +67,8 @@ our $HANDLERS  = {
 #   exports( all => [...], any => [...], ...etc... )
 #   export_all('foo bar baz')                 
 #   export_any('foo bar baz')
+#   export_before( sub { ... } )
+#   export_after( sub { ... } )
 #   export_tags( set1 => 'foo bar baz', set2 => 'wam bam' )
 #   export_hooks( foo => sub { ... }, bar => sub { ... } )
 #   export_fail( sub { ... } )
@@ -94,13 +101,40 @@ sub export_any {
     push( @$list, ref $args eq ARRAY ? @$args : split(DELIMITER, $args) );
 }
 
+sub export_before {
+    my $self = shift;
+    my $args = @_ == 1 ? shift : [ @_ ];
+    my $list = $self->export_variable( EXPORT_BEFORE => [ ] );
+    push( @$list, ref $args eq ARRAY ? @$args : $args );
+}
+
+sub export_after {
+    my $self = shift;
+    my $args = @_ == 1 ? shift : [ @_ ];
+    my $list = $self->export_variable( EXPORT_AFTER => [ ] );
+    push( @$list, ref $args eq ARRAY ? @$args : $args );
+}
+
 sub export_tags {
     my $self = shift;
     my $args = (@_ == 1) && (ref $_[0] eq HASH) ? shift : { @_ };
     my $tags = $self->export_variable( EXPORT_TAGS => { } );
 
-    # add new tags into $EXPORT_TAGS hash ref
-    @$tags{ keys %$args } = values %$args;
+    # Add new tags into $EXPORT_TAGS hash ref
+    @$tags{ keys %$args } = map {
+        # Tags can be defined as hash arrays containing (key => '=value')
+        # declarataions.  We upgrade each '=value' to a constant subroutine.
+        if (ref && ref eq HASH) {
+            while (my ($key, $value) = each %$_) {
+                if ($value =~ s/^=//) {
+                    _debug("export_tags() constructing constant: $key => $value\n") if $DEBUG;
+                    $_->{ $key } = sub() { $value };
+                }
+            }
+        }
+        $_;
+    }
+    values %$args;
 
     # all symbols referenced in tagsets (except other tag sets) must be 
     # flagged as exportable
@@ -166,7 +200,7 @@ sub export {
     my $class     = shift;
     my $target    = shift;
     my $imports   = @_ == 1 ? shift : [ @_ ];
-    my ($all, $any, $tags, $hooks, $fails) 
+    my ($all, $any, $tags, $hooks, $fails, $before, $after) 
                   = $class->exportables;
     my $can_hook  = (%$hooks ? 1 : 0);
     my $added_all = 0;
@@ -185,6 +219,10 @@ sub export {
     # TODO: what about: use Badger::Example qw();    ?  perhaps we should
     # return unless @_ up above?
     @$imports = @$all unless @$imports;
+    
+    foreach $hook (@$before) {
+        $hook->($class, $target, $imports);
+    }
 
     SYMBOL: while (@$imports) {
         next unless ($symbol = shift @$imports);
@@ -295,8 +333,15 @@ sub export {
             my $type = "&";
             $symbol =~ s/^(\W)//;
             $source =~ s/^(\W)// and $type = $1;
+            # NOTE: '=value' should *probably* never be found at this point
+            # because we're now upgrading them to constant subroutines in 
+            # the import_tags() method.  However, I'm leaving this in here
+            # until I've had a chance to properly review the code and convince
+            # myself that this assumption is correct.
+            _debug("export() constructing constant: $symbol => $source\n") 
+                if $DEBUG && $type eq '=';
             $source = $pkg.PKG.$source unless $source =~ /::/ or $type eq '=';
-           _debug("exporting $type$symbol from $source into $target\n") if $DEBUG;
+            _debug("exporting $type$symbol from $source into $target\n") if $DEBUG;
             *{ $target.PKG.$symbol } =
                 $type eq '&' ?    \&{$source} :
                 $type eq '$' ?    \${$source} :
@@ -323,6 +368,10 @@ sub export {
         Carp::croak("@{errors}Can't continue after import errors");
     }
 
+    foreach $hook (@$after) {
+        $hook->($class, $target);
+    }
+
     return 1;
 }
 
@@ -330,7 +379,7 @@ sub exportables {
     my $class = shift;
     no strict REFS;
     my $cache = ${ $class.PKG.EXPORTABLES } ||= do {
-        my ($pkg, $symbols, %done, @all, %any, %tags, %hooks, @fails);
+        my ($pkg, $symbols, %done, @all, %any, %tags, %hooks, @fails, @before, @after);
         my @pending = ($class);
         no strict REFS;
 
@@ -340,6 +389,9 @@ sub exportables {
 
         while ($pkg = shift @pending) {
             next if $done{ $pkg }++;
+
+            # TODO: we could optimise here by looking for a previously 
+            # computed EXPORTABLES in the base class and merging it in...
 
             # $EXPORT_ANY package vars are list references containing symbols,
             # which we use to populate the %any hash which maps symbols to 
@@ -386,9 +438,29 @@ sub exportables {
             # $EXPORT_FAIL has only one value per package, but we can have
             # several packages in the class ancestry
             if ($symbols = ${ $pkg.PKG.EXPORT_FAIL }) {
-                push(
-                    @fails, 
-                    $symbols
+                push(@fails, $symbols);
+            }
+
+            # $EXPORT_BEFORE and $EXPORT_AFTER are references to CODE or 
+            # ARRAY refs (of CODE refs, we assume).  As we travel up from
+            # subclass to superclass, we unshift() the handlers onto the 
+            # start of the @before/@after arrays.  This ensures that the base 
+            # class handlers get called before subclass handlers.
+            if ($symbols = ${ $pkg.PKG.EXPORT_BEFORE }) {
+                unshift(
+                    @before, 
+                    ref $symbols eq CODE  ?  $symbols :
+                    ref $symbols eq ARRAY ? @$symbols :
+                    croak sprintf(BAD_HANDLER, before => $symbols)
+                );
+            }
+
+            if ($symbols = ${ $pkg.PKG.EXPORT_AFTER }) {
+                unshift(
+                    @after, 
+                    ref $symbols eq CODE  ?  $symbols :
+                    ref $symbols eq ARRAY ? @$symbols :
+                    croak sprintf(BAD_HANDLER, after => $symbols)
                 );
             }
 
@@ -399,7 +471,7 @@ sub exportables {
             push(@pending, @{$pkg.PKG.ISA});
         }
         
-        [\@all, \%any, \%tags, \%hooks, \@fails];
+        [\@all, \%any, \%tags, \%hooks, \@fails, \@before, \@after];
     };
     
     return wantarray
@@ -516,6 +588,14 @@ Specifying the exports using the all-in-one C<exports()> method:
         fail => sub {                   # handle unknown exports
             print "I'm sorry Dave, I can't do that.\n"
         },
+        before => sub {                 # pre-import hook
+            my ($class, $target, $symbols) = @_;
+            print "This gets run before the import\n"
+        },
+        after => sub {                 # post-import hook
+            my ($class, $target) = @_;
+            print "This gets run after the import\n"
+        },
     );
 
 Or individual C<export_XXX()> methods:
@@ -545,6 +625,20 @@ Or individual C<export_XXX()> methods:
         hello => sub {
             my ($class, $target, $symbol, $more_symbols) = @_;
             print $symbol, " ", shift(@$more_symbols), "\n";
+        }
+    );
+    
+    # define generic hooks to run before/after import
+    __PACKAGE__->export_before(
+        sub {
+            my ($class, $target, $symbols) = @_;
+            print "This gets run before the import\n"
+        }
+    );
+    __PACKAGE__->export_after(
+        sub {
+            my ($class, $target) = @_;
+            print "This gets run after the import\n"
         }
     );
     
@@ -861,6 +955,41 @@ by the L<export_hook_generator()> method.  Don't worry if that doesn't
 mean anything much to you.  It simply means that we can delay doing any
 extra preparation work until we're sure that it's going to be used.
 
+=head2 export_before(\&handler)
+
+This method can be called to register a handler that will be called 
+immediately before the exporter starts importing symbols.  The 
+handler is passed three arguments: the exporter class, the target class,
+and a reference to a list of symbols that are being imported.  The handler
+can modify the list of symbols to change what does or doesn't get imported.
+
+    __PACKAGE__->export_before(
+        sub {
+            my ($class, $target, $symbols) = @_;
+            print "About to import symbols: ", join(', ', @$symbols), "\n";
+        }
+    );
+
+Multiple handlers can be defined, either in the same class or inherited from
+base classes.  Handlers defined in base classes are called before those in 
+derived classes.  Multiple handlers defined in the same class will be called
+in the order that they were defined in.
+
+=head2 export_after(\&handler)
+
+This method can be called to register a handler that will be called 
+immediately after the exporter has finished importing symbols.  The 
+handler is passed two arguments: the exporter class and target class.
+
+    __PACKAGE__->export_after(
+        sub {
+            my ($class, $target) = @_;
+            print "Finished exporting\n";
+        }
+    );
+
+Multiple handlers can be defined, as per L<export_before()>.
+
 =head2 export_fail(\&handler)
 
 This method can be used to register a subroutine to handle any export
@@ -965,6 +1094,8 @@ Or:
 
 The second argument is a reference to your handler subroutine.  The third
 argument is the number of additional arguments your subroutine expects.
+
+=head1 PACKAGE VARIABLES
 
 =head1 AUTHOR
 

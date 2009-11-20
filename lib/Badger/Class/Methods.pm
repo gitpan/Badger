@@ -17,13 +17,13 @@ use Badger::Class
     debug     => 0,
     base      => 'Badger::Base',
     import    => 'class BCLASS',
-    constants => 'DELIMITER ARRAY HASH',
+    constants => 'DELIMITER ARRAY HASH PKG',
     utils     => 'is_object',
     exports   => {
         hooks => {
             init => \&initialiser,
             map { $_ => [\&generate, 1] }
-            qw( accessors mutators get set slots hash )
+            qw( accessors mutators get set slots hash auto_can )
         },
     },
     messages  => {
@@ -38,6 +38,7 @@ use Badger::Class
 *get = \&accessors;
 *set = \&mutators;
 
+our $AUTOLOAD;
 
 sub generate {
     my $class   = shift;
@@ -143,6 +144,37 @@ sub slots {
             }
         );
     }
+}
+
+sub auto_can {
+    my ($class, $target, $methods) = shift->args(@_);
+
+    die "auto_can only support a single method at this time\n"
+        if @$methods != 1;
+        
+    my $method = shift @$methods;
+
+    $target->import_symbol( 
+        can => sub {
+            my ($this, $name, @args) = @_;
+            my $target;
+            return $this->SUPER::can($name)
+                || $this->$method($name, @args);
+        }
+    );
+
+    $target->import_symbol( 
+        AUTOLOAD => sub {
+            my ($this, @args) = @_;
+            my ($name) = ($AUTOLOAD =~ /([^:]+)$/ );
+            return if $name eq 'DESTROY';
+            if (my $method = $this->can($name, @args)) {
+                $target->method( $name => $method );
+                return $method->($this, @args);
+            }
+            return $this->error_msg( bad_method => $name, ref $this, (caller())[1,2] );
+        }
+    );
 }
 
 sub args {
@@ -428,6 +460,97 @@ The methods generated are mutators.  That is, you can pass an argument
 to update the slot value.
 
     $bus->size('large');
+
+=head2 auto_can($class,$method)
+
+This can be used to define a method that automatically generates other
+methods on demand.  
+
+Suppose you have a view class that renders a view of a tree. In classic
+I<double dispatch> style, each node in the tree calls a method against the
+view object corresponding to the node's type. A C<text> node calls
+C<$view-E<gt>view_text($self)>, a C<bold> node calls
+C<$view-E<gt>view_bold($self)>, and so on (we're assuming that this is some
+kind of document object model we're rendering, but it could apply to
+anything).
+
+Our view methods might look something like this:
+
+    sub view_text {
+        my ($self, $node) = @_;
+        print "TEXT: $node\n";
+    }
+
+    sub view_bold {
+        my ($self, $node) = @_;
+        print "BOLD: $node\n";
+    }
+
+This can get rather repetitive and boring if you've got lots of different
+node types.  So instead of defining all the methods manually, you can declare
+an C<auto_can> method that will create methods on demand.
+
+    use Badger::Class
+        auto_can => 'can_view';
+
+    sub can_view {
+        my ($self, $name) = @_;
+        my $NAME = uc $name;
+        
+        return sub {
+            my ($self, $node) = @_;
+            print "$NAME: $node";
+        }
+    }
+
+The method should return a subroutine reference or any false value if it
+declines to generate a method.  For example, you might want to limit the 
+generator method to only creating methods that match a particular format.
+
+    sub can_view {
+        my ($self, $name) = @_;
+
+        # only create methods that are prefixed with 'view_'
+        if ($name =~ s/^view_//) {
+            my $NAME = uc $name;
+            
+            return sub {
+                my ($self, $node) = @_;
+                print "$NAME: $node";
+            }
+        }
+        else {
+            return undef;
+        }
+    }
+
+The C<auto_can()> method adds C<AUTOLOAD()> and C<can()> methods to your 
+class.  The C<can()> method first looks to see if the method is pre-defined
+(i.e. it does what the default C<can()> method does).  If it isn't, it then
+calls the C<can_view()> method that we've declared using the C<auto_can> 
+option (you can call your method C<auto_can()> if you like, but in this 
+case we're calling it C<can_view()> just to be different).  The end result
+is that you can call C<can()> and it will generate any missing methods on
+demand.
+
+    # this calls can_view() which returns a CODE sub 
+    my $method = $object->can('view_italic');
+
+The C<AUTOLOAD()> method is invoked whenever you call a method that 
+doesn't exist.  It calls the C<can()> method to automatically generate 
+the method and then installs the new method in the package's symbol table.
+The next time you call the method it will be there waiting for you.  There's
+no need for the C<AUTOLOAD()> method to get involved from that point on.
+
+    # this calls can_view() to create the method and then calls it
+    $object->view_cheese('Camembert');      # CHEESE: Camembert
+    
+    # this directly calls the new method
+    $object->view_cheese('Cheddar');        # CHEESE: Cheddar
+
+If your C<can_view()> method returns a false value then C<AUTOLOAD()> 
+will raise the familiar "Invalid method..." error that you would normally
+get from calling a non-existent method.
 
 =head1 INTERNAL METHODS
 
