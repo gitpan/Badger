@@ -20,7 +20,7 @@ use Badger::Base;
 use Badger::Test 
     debug => 'Badger::Debug',
     args  => \@ARGV,
-    tests => 34;
+    tests => 35;
     
 
 #-----------------------------------------------------------------------
@@ -57,18 +57,17 @@ $SIG{__DIE__} = sub {
 my $obj = Badger::Base->new();
 
 $obj->debug("Hello World\n");
-like( $dbgmsg, qr/\[main \(Badger::Base\) line \d\d\] Hello World/, 'Hello World' );
+like( $dbgmsg, qr/\[main \(Badger::Base\) line \d\d\]\s> Hello World/s, 'Hello World' );
 
 $obj->debug('Hello ', "Badger\n");
-like( $dbgmsg, qr/\[main \(Badger::Base\) line \d\d\] Hello Badger/, 'Hello Badger' );
-
+like( $dbgmsg, qr/\[main \(Badger::Base\) line \d\d\]\s> Hello Badger/s, 'Hello Badger' );
 
 #-----------------------------------------------------------------------
 # subclass
 #-----------------------------------------------------------------------
 
 package Badger::Test::Debug1;
-use Badger::Debug 'debugging debug';
+use Badger::Debug 'debugging debug debugf';
 our $DEBUG = 1;
 
 sub new {
@@ -89,12 +88,16 @@ $obj = Badger::Test::Debug1->new;
 pass('there');
 $obj->hello('Ferret');
 pass('there');
-like( $dbgmsg, qr/\[Badger::Test::Debug1 line \d\d\] Hello Ferret/, 'Hello Ferret' );
+like( $dbgmsg, qr/\[Badger::Test::Debug1::hello\(\) line \d\d\]\s> Hello Ferret/s, 'Hello Ferret' );
 
 pass('there');
 
 $dbgmsg = '';
 
+$obj->debugf('foo(%s)', 'bar');
+like( $dbgmsg, qr/foo\(bar\)/, 'debugf()' );
+
+$dbgmsg = '';
 is( $obj->debugging(0), 0, 'turned debugging off' );
 is( $obj->debugging, 0, 'debugging is now turned off' );
 $obj->hello('Stoat');
@@ -181,7 +184,7 @@ package main;
 
 $dbgmsg = '';
 My::Debugger2->hello;
-is( $dbgmsg, "[My::Debugger2 line 23] Hello world\n", 'got debug message' );
+is( $dbgmsg, "[My::Debugger2::hello() line 23]\n> Hello world\n", 'got debug message' );
 
 #-----------------------------------------------------------------------
 # test debug load option
@@ -230,7 +233,7 @@ is(
         { where => 'At the edge of time', line  => 420 }, 
         'Flying sideways'
     ),
-    "[At the edge of time line 420] Flying sideways\n",
+    "[At the edge of time line 420]\n> Flying sideways\n",
     'I can fly sideways through time'
 );
 
@@ -251,7 +254,8 @@ use Badger::Timestamp 'Now';
 my $format = Badger::Test::Debug::Format->new;
 
 {
-    local $Badger::Debug::FORMAT = '<pkg> <class> <where> <line> <msg>';
+    local $Badger::Debug::FORMAT  = '<pkg> <class> <where> <line> <msg>';
+    local $Badger::Debug::MESSAGE = '%s';
 
     is( 
         $format->debug_at(
@@ -278,3 +282,5 @@ my $format = Badger::Test::Debug::Format->new;
         'message format with date and time'
     );
 }
+
+

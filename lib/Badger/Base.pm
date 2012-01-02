@@ -48,15 +48,12 @@ our $MESSAGES  = {
 
 sub new {
     my $class = shift;
-    if (DEBUG && ((@_ == 1 && ref $_[0] ne HASH) || (@_ > 2 and @_ % 2))) {
-        # catch any "Odd number of elements..." warnings before they happen
-        # so we can report where this method was called from.
-        my ($pkg, $file, $line) = caller();
-        $class->debug(
-            "WARNING: odd number of elements passed to $class->new(", 
-            join(', ', @_), ")\ncalled from $pkg in $file at line $line\n"
-        );
-    }
+
+    # install warning handling for odd number of parameters when DEBUG enabled
+    local $SIG{__WARN__} = sub {
+        Badger::Utils::odd_params(@_);
+    } if DEBUG;
+    
     my $args  = @_ && ref $_[0] eq HASH ? shift : { @_ };
     my $self  = bless { }, ref $class || $class;
        $self  = $self->init($args);
@@ -220,9 +217,17 @@ sub throw {
 sub try {
     my $self = shift;
     if (@_) {
-        my $method = shift;     # || return $self->error_msg( missing_to => method => 'try' );
-        eval { $self->$method(@_) }
-            || $self->decline($@);
+        my $method = shift;
+        if (wantarray) {
+            my @result = eval { $self->$method(@_) };
+            $self->decline($@) if $@;
+            return @result;
+        }
+        else {
+            my $result = eval { $self->$method(@_) };
+            $self->decline($@) if $@;
+            return $result;
+        }
     }
     else {
         return TRIAL->_bind_($self);
@@ -266,7 +271,11 @@ sub exception {
     my $self  = shift;
     my $type  = reftype $self || BLANK;
     my $emod;
-    
+
+    # TODO: Move this into Template::Class.  It's so rare that you want to 
+    # set an exception type this way.  Then we can have throw() pass the $type
+    # to exception() and allow subclasses to make a decision about what kind
+    # of exception to return based on the $type.
     if (@_) {
         # as per throws() above, we have to be careful to only treat $self
         # like a hash when it is a hash-based object
@@ -466,7 +475,7 @@ sub _dispatch_handlers {
 
 
 #-----------------------------------------------------------------------
-# Badger::Base::Trial - monadic object for $object->try operation
+# Badger::Base::Trial - nomadic object for $object->try operation
 #-----------------------------------------------------------------------
 
 package Badger::Base::Trial;
@@ -479,17 +488,21 @@ sub _bind_ {
 
 sub AUTOLOAD {
     my $self = shift;
-    my ($name) = ($AUTOLOAD =~ /([^:]+)$/ );
-    return if $name eq 'DESTROY';
+    my ($method) = ($AUTOLOAD =~ /([^:]+)$/ );
+    return if $method eq 'DESTROY';
 
     # call method on target object in eval block, and downgrade
+    if (wantarray) {
+        my @result = eval { $$self->$method(@_) };
+        $$self->decline($@) if $@;
+        return @result;
+    }
+    else {
+        my $result = eval { $$self->$method(@_) };
+        $$self->decline($@) if $@;
+        return $result;
+    }
 
-    my $result = eval { $$self->$name(@_) };
-#    $$self->debug("result ($@): [", defined $result ? $result : '<undef>', ']');
-    return defined $result
-        ? $result
-        : $$self->decline($@);
-    
     # TODO: catch missing error methods
 }
 

@@ -17,22 +17,38 @@ use Badger::Class
     version   => 0.01,
     debug     => 0,
     uber      => 'Badger::Class',
-    hooks     => 'item path',
+    hooks     => 'item path names default',
     words     => 'ITEM ITEMS',
-    utils     => 'plural',
+    utils     => 'plural permute_fragments',
     import    => 'CLASS',
     constants => 'DELIMITER ARRAY HASH',
     constant  => {
-        PATH_SUFFIX => '_PATH',
-        FACTORY     => 'Badger::Factory',
+        PATH_SUFFIX  => '_PATH',
+        NAMES_SUFFIX => '_NAMES',
+        FACTORY      => 'Badger::Factory',
     };
+# chicken and egg
 #    exports   => {
-#        fail  => _export_fail_hook,
+#        fail  => \&_export_fail_hook,
 #    };
 
+CLASS->export_before(\&_export_before_hook);
 CLASS->export_fail(\&_export_fail_hook);
 
 # catch a hook that has the same name as the items, i.e. widgets
+
+sub _export_before_hook {
+    my ($class, $target) = @_;
+    my $klass = class($target, $class);
+    # special-case: we don't want to force the factory base class on 
+    # Badger::Class if it's loading this module as the uber parent of a
+    # Factory::Class subclass (e.g. Template::TT3::Factory::Class).
+    return if $target eq 'Badger::Class';
+    $class->debug("$class setting $klass ($target) base class to ", $class->FACTORY)
+        if DEBUG;
+    $klass->base($class->FACTORY);
+}
+
 
 sub _export_fail_hook {
     my ($class, $target, $symbol, $symbols) = @_;
@@ -59,19 +75,27 @@ sub _export_fail_hook {
     }
 }
 
+
+sub default {
+    my ($self, $item) = @_;
+    $self->var( DEFAULT => $item );
+    return $self;
+}
+
+
 sub item {
     my ($self, $item) = @_;
-    $self->base(FACTORY);
     $self->var( ITEM => $item );
     return $self;
 }
 
+
 sub items {
     my ($self, $items) = @_;
-    $self->base(FACTORY);
     $self->var( ITEMS => $items );
     return $self;
 }
+
 
 sub path {
     my ($self, $path) = @_;
@@ -79,15 +103,31 @@ sub path {
         || croak "\$ITEM is not defined for $self.  Please add an 'item' option";
     my $var = uc($type) . PATH_SUFFIX;
 
-    $path = [ split(DELIMITER, $path) ]
+    $path = [ map { permute_fragments($_) } split(DELIMITER, $path) ]
         unless ref $path eq ARRAY;
 
     $self->debug("adding $var => [", join(', ', @$path), "]") if DEBUG;
-    $self->base(FACTORY);
+#    $self->base(FACTORY);
 
     # we use import_symbol() rather than var() so that it gets declared 
     # properly, thus avoiding undefined symbol warnings
     $self->import_symbol( $var => \$path );
+    
+    return $self;
+}
+
+
+sub names {
+    my ($self, $map) = @_;
+    my $type = $self->var(ITEM)
+        || croak "\$ITEM is not defined for $self.  Please add an 'item' option";
+    my $var = uc($type) . NAMES_SUFFIX;
+
+    $self->debug("$self adding names $var => {", join(', ', %$map), "}") if DEBUG;
+
+    # we use import_symbol() rather than var() so that it gets declared 
+    # properly, thus avoiding undefined symbol warnings
+    $self->import_symbol( $var => \$map );
     
     return $self;
 }
@@ -110,6 +150,10 @@ This module can be used to create subclasses of L<Badger::Factory>.
         widgets => {
             extra => 'Another::Widget::Module',
             super => 'Golly::Gosh',
+        },
+        names   => {
+            html  => 'HTML',
+            color => 'Colour',
         };
 
     package main;
@@ -148,6 +192,52 @@ A list of module names that form the search path when loading modules. This
 will set the relevant package variable depending on the value of C<$ITEMS> (or
 the regular plural form of C<$ITEM> if C<$ITEMS> is undefined).  For example,
 is C<$ITEMS> is set to C<widgets> then this method will set C<$WIDGETS_PATH>.
+
+You can specify the path as a reference to a list of module bases, e.g.
+
+    use Badger::Factory::Class
+        item => 'widget',
+        path => ['My::Widget', 'Your::Widget'];
+
+Or as a single string containing multiple values separated by whitespace.
+
+    use Badger::Factory::Class
+        item => 'widget',
+        path => 'My::Widget Your::Widget';
+
+If you specify it as a single string then you can also include optional 
+and/or alternate parts in parentheses.  For example the above can be 
+written more concisely as:
+
+    use Badger::Factory::Class
+        item => 'widget',
+        path => '(My|Your)::Widget';
+
+If the parentheses don't contain a vertical bar then then enclosed fragment
+is treated as being optional.  So instead of writing something like:
+
+    use Badger::Factory::Class
+        item => 'widget',
+        path => 'Badger::Widget BadgerX::Widget';
+
+You can write:
+
+    use Badger::Factory::Class
+        item => 'widget',
+        path => 'Badger(X)::Widget';
+
+See the L<permute_fragments()|Badger::Utils/permute_fragments()> function in
+L<Badger::Utils> for further details on how fragments are expanded.
+
+=head2 names($names)
+
+A reference to a hash array of name mappings. This can be used to handle any
+unusual spellings or capitalisations. See L<Badger::Factory> for further
+details.
+
+=head2 default($name)
+
+The default name to use when none is specified in a request for a module.
 
 =head1 AUTHOR
 

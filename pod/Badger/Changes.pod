@@ -10,17 +10,25 @@ successive version of the Badger toolkit.
 Mr T is our badger mascot.  He no longer pities the fool that uses Badger
 in a production system.  Which is a roundabout way of saying that Badger
 is now stable, reliable, and unlikely to change significantly in future
-versions.  
+versions.
 
 Badger is already being deployed in commercial production systems that I've
 built and I wouldn't be doing that if I wasn't 99.9% certain of its
 suitability and fitness for purpose. There are no guarantees of course, but it
 may help you to sleep at night knowing that I have a heavily vested interest
-in keeping the Badger fit and healthy.
+in keeping the Badger fit and healthy.  But remember that you use it at your
+own risk and it's not my fault if it doesn't make unicorns dance across the
+sky for you.
 
-=head2 Version 0.07
+As of version 0.07, Badger is being used as the foundation for the new
+version of the Template Toolkit, TT3.  It's not on CPAN yet (although it 
+might be by the time you read this), but you can access the git repository
+at L<http://github.com/abw/Template-TT3>.
 
-Added L<Badger::Storage> and L<Badger::Storage::Filesystem>.
+=head2 Version 0.07 - 2nd January 2012
+
+Added L<Badger::Storage>, L<Badger::Storage::Memory>.
+and L<Badger::Storage::Filesystem>.
 
 Added L<Badger::Codec::TT>. 
 
@@ -28,7 +36,10 @@ Added the L<permissions()|Badger::Filesystem::Path/permissions()> method to
 L<Badger::Filesystem::Path>. Added
 L<temp_directory()|Badger::Filesystem/temp_directory()> and
 L<temp_file()|Badger::Filesystem/temp_file()> methods to
-L<Badger::Filesystem>.
+L<Badger::Filesystem>. Also changed the L<Path()|Badger::Filesystem/Path()>,
+L<File()|Badger::Filesystem/File()> and L<Dir()|Badger::Filesystem/Dir()>
+functions to short-circuit and return if passed a single object that is
+already of the expected type.
 
 Added some extra comparison methods to L<Badger::Timestamp>
 (L<not_equal()|Badger::Timestamp/not_equal()>,
@@ -48,20 +59,46 @@ is set (e.g. for Pod coverage/kwalitee tests that you only want to run
 if either of the C<RELEASE_TESTING> or C<AUTOMATED_TESTING> environment 
 variables is set).
 
-Added the L<random_name()|Badger::Utils/random_name()> and
-L<camel_case()|Badger::Utils/camel_case()> functions to L<Badger::Utils>. Also
-add some extra debugging code to L<params()|Badger::Utils/params()> and
-L<self_params()|Badger::Utils/self_params()> to catch any attempt to pass
-an odd number of arguments.  
+Added the L<random_name()|Badger::Utils/random_name()>,
+L<camel_case()|Badger::Utils/camel_case()> and
+L<permute_fragments()|Badger::Utils/permute_fragments()> functions to
+L<Badger::Utils>. Also add some extra debugging code to
+L<params()|Badger::Utils/params()> and
+L<self_params()|Badger::Utils/self_params()> to catch any attempt to pass an
+odd number of arguments.
 
-Added the L<debugf()|Badger::Debug/debugf()> and 
-L<debug_at()|Badger::Debug/debug_at()> methods to 
-L<Badger::Debug>.
+Changed the L<Badger::Factory> module to use
+L<permute_fragments()|Badger::Utils/permute_fragments()> on the module path
+when specified as a single string. Also added the
+L<default()|Badger::Factory/default()> and 
+L<names()|Badger::Factory/names()> methods along with their corresponding 
+package variable magic.
+
+Added the L<debug_callers()|Badger::Debug/debug_callers()>,
+L<debugf()|Badger::Debug/debugf()> and L<debug_at()|Badger::Debug/debug_at()>
+methods to L<Badger::Debug>.
+
+Added the L<alias()|Badger::Class/alias()> method to 
+L<Badger::Class>.
 
 Added the L<auto_can()|Badger::Class::Methods/auto_can()> method to 
 L<Badger::Class::Methods>.
 
+Changed the L<Badger::Class::Config> module to store the configuration scheme
+in C<$CONFIG_SCHEMA> instead of C<$CONFIG>.
+
 Added the L<Badger::Codec::HTML> module which defines the C<html> codec. 
+
+Changed the L<throw()|Badger::Base/throw()> method in L<Badger::Base> to
+pass the exception type to L<exception()|Badger::Base/exception()>.
+
+Changed the L<try()|Badger::Base/try()> method in L<Badger::Base> to
+preserve the list/scalar calling context and to handle false but defined
+values.
+
+Cleaned up and generalised the L<Badger::Hub> module.  The Badger-specific
+data has now been moved into L<Badger::Hub::Badger>.  The C<configure()>
+method is now called L<construct()|Badger::Hub/construct()>.
 
 =head2 Version 0.06
 
@@ -260,7 +297,7 @@ Andy Wardley  E<lt>abw@wardley.orgE<gt>
 
 =head1 COPYRIGHT
 
-Copyright (C) 2008-2009 Andy Wardley.  All Rights Reserved.
+Copyright (C) 2008-2012 Andy Wardley.  All Rights Reserved.
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.

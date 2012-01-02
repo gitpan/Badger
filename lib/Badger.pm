@@ -6,7 +6,7 @@ use lib;
 use Badger::Hub;
 use Badger::Class
     debug      => 0,
-    version    => '0.06_01',
+    version    => '0.07',
     base       => 'Badger::Base',
     import     => 'class',
     words      => 'HUB',
@@ -19,9 +19,9 @@ use Badger::Class
         fail   => \&_export_handler,
     };
 
-our $VERSION = '0.06_01';              # Just for ExtUtils::MakeMaker.  Ick
-our $HUB     = 'Badger::Hub';
+our $HUB = 'Badger::Hub::Badger';
 our $AUTOLOAD;
+
 
 sub _export_handler {
     # TODO: we should be able to refactor this down, now that Badger::Exporter
@@ -116,7 +116,7 @@ This is equivalent to:
     use Badger::Utils      'numlike textlike',
     use Badger::Constants  'ARRAY HASH',
     use Badger::Codecs      codec => 'base64';
-	
+
 =head1 DESCRIPTION
 
 The Badger toolkit is a collection of Perl modules designed to simplify the
@@ -236,7 +236,7 @@ Andy Wardley  L<http://wardley.org/>
 
 =head1 COPYRIGHT
 
-Copyright (C) 1996-2009 Andy Wardley.  All Rights Reserved.
+Copyright (C) 1996-2012 Andy Wardley.  All Rights Reserved.
 
 This module is free software; you can redistribute it and/or
 modify it under the same terms as Perl itself.

@@ -16,11 +16,33 @@ use Badger::Class
     version   => 0.01,
     debug     => 0,
     base      => 'Badger::Base',
-    constants => 'ARRAY CODE REGEX ON WILDCARD',
+    import    => 'class',
     utils     => 'params',
+    constants => 'ARRAY CODE REGEX ON WILDCARD',
+    config    => [
+        'files|accept|class:FILES',
+        'no_files|ignore|class:NO_FILES',
+        'dirs|directories|class:DIRS',
+        'no_dirs|no_directories|class:NO_DIRS',
+        'in_dirs|in_directories|enter|class:IN_DIRS',
+        'not_in_dirs|not_in_directories|leave|class:NOT_IN_DIRS',
+        'accept_file',
+        'reject_file',
+        'accept_dir|accept_directory',
+        'reject_dir|reject_directory',
+        'enter_dir|enter_directory',
+        'leave_dir|leave_directory',
+    ],
     messages  => {
         no_node    => 'No node specified to %s',
         bad_filter => 'Invalid test in %s specification: %s',
+    },
+    alias     => {
+        init            => \&init_visitor,
+        collect_dir     => \&collect_dir,
+        enter_dir       => \&enter_directory,
+        visit_dir       => \&visit_directory,
+        visit_dir_kids  => \&visit_directory_children,
     };
 
 use Badger::Debug ':dump';
@@ -33,42 +55,27 @@ our $NO_FILES    = 0;
 our $NO_DIRS     = 0;
 our $NOT_IN_DIRS = 0;
 
-*enter_dir      = \&enter_directory;
-*visit_dir      = \&visit_directory;
-*visit_dir_kids = \&visit_directory_children;
 
-sub init {
+sub init_visitor {
     my ($self, $config) = @_;
     my $class = $self->class;
     my ($item, $long);
 
-    $config->{ in_dirs } = 1
+    $self->configure($config);
+    
+    $self->{ in_dirs } = 1
         if $config->{ recurse };
-
-    foreach $item ('all', @FILTERS) {
-        # allow 'directories' as alias for 'dirs'
-        $long = $item;
-        $long =~ s/dirs/directories/;
-        # for those entries that don't contains 'dirs', the $item and $long
-        # will be the same, so we've got an unneccessary test or two, but 
-        # it keeps the code simple
-        $self->{ $item } 
-            = defined $config->{ $long }
-                    ? $config->{ $long }
-            : defined $config->{ $item }
-                    ? $config->{ $item }
-            : $class->any_var(uc $item);
-    }
     
     $self->{ collect  } = [ ];
     $self->{ identify } = { };
-        
-    # TODO: at_file/at_dir handlers
 
     $self->init_filters;
 
+    $self->debug("init_visitor() => ", $self->dump) if DEBUG;
+
     return $self;
 }
+
 
 sub init_filters {
     my $self = shift;
@@ -76,6 +83,7 @@ sub init_filters {
     
     foreach $filter (@FILTERS) {
         $tests = $self->{ $filter } || next;        # skip over false values
+        $self->debug("filter: $filter => $tests\n") if DEBUG;
         $tests = $self->{ $filter } = [$tests] 
             unless ref $tests eq ARRAY;
         
@@ -111,11 +119,13 @@ sub init_filters {
     }
 }
 
+
 sub visit {
     my $self = shift;
     my $node = shift || return $self->error_msg( no_node => 'visit' );
     $node->enter($self);
 }
+
 
 sub visit_path {
     my ($self, $path) = @_;
@@ -123,35 +133,36 @@ sub visit_path {
     $self->debug("visiting path: $path\n") if $DEBUG;
 }
 
+
 sub visit_file {
     my ($self, $file) = @_;
-    $self->debug("visiting file: $file\n") if $DEBUG;
 
-    $self->collect($file) 
-        if $self->accept_file($file);
+    return $self->filter_file($file)
+         ? $self->accept_file($file)
+         : $self->reject_file($file);
 }
+
 
 sub visit_directory {
     my ($self, $dir) = @_;
     $self->debug("visiting directory: $dir\n") if $DEBUG;
 
-    $self->collect($dir) 
-        if $self->accept_directory($dir);
+    $self->filter_directory($dir)
+         ? $self->accept_directory($dir) || return
+         : $self->reject_directory($dir) || return;
 
-    $self->visit_directory_children($dir)
-        if $self->enter_directory($dir);
+    return $self->filter_entry($dir)
+         ? $self->enter_directory($dir)
+         : $self->leave_directory($dir);
 }
 
-sub visit_directory_children {
-    my ($self, $dir) = @_;
-    $self->debug("visiting directory children: $dir\n") if $DEBUG;
-    map { $_->accept($self) }
-    $dir->children($self->{ all });
-}
 
 sub filter {
     my ($self, $filter, $method, $item) = @_;
-    my $tests = $self->{ $filter } || return 0;
+    my $tests = $self->{ $filter } || do {
+        $self->debug("No filter defined for $filter") if DEBUG;
+        return 0;
+    };
     my ($test, $type);
 
     $self->debug("filter($filter, $method, $item)  tests: $tests\n") if $DEBUG;
@@ -163,6 +174,7 @@ sub filter {
         }
         elsif ($type = ref $test) {
             if ($type eq CODE) {
+#                $self->debug("calling code: ". $test->($item, $self));
                 return 1 if $test->($item, $self);
             }
             elsif ($type eq REGEX) {
@@ -180,23 +192,87 @@ sub filter {
     return 0;
 }
 
-sub accept_file {
-    my $self = shift;
-    return $self->filter( files    => name => @_ )
-      && ! $self->filter( no_files => name => @_ );
+
+sub filter_file {
+    my ($self, $file) = @_;
+    return $self->filter( files    => name => $file )
+      && ! $self->filter( no_files => name => $file );
 }
 
+
+sub filter_directory {
+    my ($self, $dir) = @_;
+    return $self->filter( dirs    => name => $dir )
+      && ! $self->filter( no_dirs => name => $dir );
+}
+
+
+sub filter_entry {
+    my ($self, $dir) = @_;
+    return $self->filter( in_dirs     => name => $dir )
+      && ! $self->filter( not_in_dirs => name => $dir );
+}
+
+
+sub accept_file {
+    my ($self, $file) = @_;
+    $self->debug("accept_file($file)") if DEBUG;
+    $self->{ accept_file }->($self, $file)
+        if $self->{ accept_file };
+    return $self->collect($file);
+
+#    return $self->filter( files    => name => @_ )
+#      && ! $self->filter( no_files => name => @_ );
+}
+
+
+sub reject_file {
+    my ($self, $file) = @_;
+    $self->debug("reject_file($file)") if DEBUG;
+    return $self->{ reject_file }
+         ? $self->{ reject_file }->($self, $file)
+         : 1;
+}
+
+
 sub accept_directory {
-    my $self = shift;
-    return $self->filter( dirs    => name => @_ )
-      && ! $self->filter( no_dirs => name => @_ );
+    my ($self, $dir) = @_;
+    $self->debug("accept_dir($dir)") if DEBUG;
+    $self->{ accept_dir }->($self, $dir) || return
+        if $self->{ accept_dir };
+    return $self->collect($dir);
+}
+
+
+sub reject_directory {
+    my ($self, $dir) = @_;
+    $self->debug("reject_directory($dir)") if DEBUG;
+    return $self->{ reject_dir }
+         ? $self->{ reject_dir }->($self, $dir)
+         : 1;
 }
 
 sub enter_directory {
-    my $self = shift;
-    return $self->filter( in_dirs     => name => @_ )
-      && ! $self->filter( not_in_dirs => name => @_ );
+    my ($self, $dir) = @_;
+    $self->debug("visiting directory children: $dir") if $DEBUG;
+    $self->{ enter_dir }->($self, $dir) || return
+        if $self->{ enter_dir };
+    
+    $_->accept($self)
+        for $dir->children;
+#        for $dir->children($self->{ all });
+    return 1;
 }
+
+
+sub leave_directory {
+    my ($self, $dir) = @_;
+    $self->debug("leave_directory($dir)") if DEBUG;
+    return $self->{ leave_dir }
+         ? $self->{ leave_dir }->($self, $dir)
+         : 1;
+}
+
 
 sub collect {
     my $self    = shift;
@@ -220,6 +296,7 @@ sub identify {
         :  $identify;
 }
 
+
 1;
 
 __END__
@@ -233,10 +310,10 @@ Badger::Filesystem::Visitor - visitor for traversing filesystems
     use Badger::Filesystem 'FS';
     
     my $controls = {
-        files       => '*.pm',          # collect all *.pm files
-        dirs        => 0,               # ignore dirs
-        in_dirs     => 1,               # but do look in dirs for more files
-        not_in_dirs => ['.svn', '.hg'], # don't look in these dirs
+        files       => '*.pm',           # collect all *.pm files
+        dirs        => 0,                # ignore dirs
+        in_dirs     => 1,                # but do look in dirs for more files
+        not_in_dirs => ['.svn', '.git'], # don't look in these dirs
     };
     
     my @files = FS
@@ -356,30 +433,78 @@ and L<Badger::Filesystem::Directory> objects.
     my $collect = $visitor->collect;        # list ref in scalar context
     my @collect = $visitor->collect;        # list in list context
 
+=head1 CONFIGURATION OPTIONS
+
+NOTE: I'm planning the add the 'accept', 'ignore', 'enter', and 'leave'
+aliases for 'files', 'no_files', 'in_dirs' and 'not_in_dirs'.  Can't think
+of better names for 'dirs' and 'no_dirs' though...
+
+=head2 files / accept (todo)
+
+A pattern specifier indicating the files that you want to match.
+
+=head2 no_files / ignore (todo)
+
+A pattern specifier indicating the files that you don't want to match.
+
+=head2 dirs / directories 
+
+A pattern specifier indicating the directories that you want to match.
+
+=head2 no_dirs / no_directories
+
+A pattern specifier indicating the directories that you don't want to match.
+
+=head2 in_dirs / in_directories / enter (todo)
+
+A pattern specifier indicating the directories that you want to enter to 
+search for further files and directories.
+
+=head2 not_in_dirs / not_in_directories / leave (todo)
+
+A pattern specifier indicating the directories that you don't want to enter to
+search for further files and directories.
+
+=head2 at_file
+
+A reference to a subroutine that you want called whenever a file of interest
+(i.e. one that is included by L<files> and not excluded by L<no_files>) is
+visited.  The subroutine is passed a reference to the visitor object and
+a reference to a L<Badger::Filesystem::File> object representing the file.
+
+    $dir->visit(
+        at_file => sub {
+            my ($visitor, $file) = @_;
+            print "visiting file: ", $file->name, "\n";
+        }
+    );
+
+=head2 at_dir / at_directory
+
+A reference to a subroutine that you want called whenever a directory of
+interest (i.e. one that is included by L<dirs> and not excluded by
+L<no_dirs>) is visited. The subroutine is passed a reference to the visitor
+object and a reference to a L<Badger::Filesystem::Directory> object representing
+the directory.
+
+    $dir->visit(
+        at_dir => sub {
+            my ($visitor, $dir) = @_;
+            print "visiting dir: ", $dir->name, "\n";
+        }
+    );
+
+If the function returns a true value then the visitor will continue to 
+visit any files or directories within it according to it's usual rules
+(i.e. if the directory is listed in a L<not_in_dirs> rule then it won't
+be entered).  If the function returns a false value then the directory
+will be skipped.
+
 =head1 METHODS
 
 =head2 new(\%params)
 
 Constructor method to create a new C<Badger::Filesystem::Visitor>.
-
-=head2 collect(@items)
-
-This method is used by the visitor to collect items of interest.  Any 
-arguments passed are added to the internal C<collect> list.
-
-    $visitor->collect($this, $that);
-
-The list of collected items is returned in list context, or a reference to 
-a list in scalar context.
-
-    my $collect = $visitor->collect;
-    my @collect = $visitor->collect;
-
-=head2 identify(%items)
-
-This method is similar to L<collect()> but is used to construct a lookup table
-for identifying files and directories by name. In fact, it's currently not
-currently used for anything, but may be one day RSN.
 
 =head1 TRAVERSAL METHODS
 
@@ -443,6 +568,49 @@ defines the filter specification. The second argument is the name of the
 file/directory method that returns the value that should be compared (in this
 case, the file or directory name). The third argument is the file or directory
 object itself.
+
+=head1 COLLECTION METHODS
+
+=head2 collect_file($file)
+
+This method is called by the visitor when a file is accepted by the 
+L<accept_file()> method.  If an L<at_file> handler is defined then it is
+called, passing a reference to the visitor and the file being visited.  If
+the handler returns a true value then the method goes on to call L<collect()>.
+Otherwise it returns immediately.
+
+If no L<at_file> handler is defined then the method delegates to L<collect()>.
+
+=head2 collect_directory($dir) / collect_dir($dir)
+
+This method is called by the visitor when a directory is accepted by the
+L<accept_directory()> method. If an L<at_directory> handler is defined then it
+is called, passing a reference to the visitor and the directory being visited
+as arguments. If the handler returns a true value then the method goes on to
+call L<collect()>. Otherwise it returns immediately and short-circuits any
+further visits to files or directories contained within it.
+
+If no L<at_directory> handler is defined then the method delegates to
+L<collect()>.
+
+=head2 collect(@items)
+
+This method is used by the visitor to collect items of interest.  Any 
+arguments passed are added to the internal C<collect> list.
+
+    $visitor->collect($this, $that);
+
+The list of collected items is returned in list context, or a reference to 
+a list in scalar context.
+
+    my $collect = $visitor->collect;
+    my @collect = $visitor->collect;
+
+=head2 identify(%items)
+
+This method is similar to L<collect()> but is used to construct a lookup table
+for identifying files and directories by name. In fact, it's currently not
+currently used for anything, but may be one day RSN.
 
 =head1 AUTHOR
 

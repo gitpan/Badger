@@ -12,12 +12,13 @@
 
 package Badger::Class::Methods;
 
+use Carp;
 use Badger::Class
     version   => 0.01,
     debug     => 0,
     base      => 'Badger::Base',
     import    => 'class BCLASS',
-    constants => 'DELIMITER ARRAY HASH PKG',
+    constants => 'DELIMITER ARRAY HASH PKG CODE',
     utils     => 'is_object',
     exports   => {
         hooks => {
@@ -154,10 +155,25 @@ sub auto_can {
         
     my $method = shift @$methods;
 
+    croak "Invalid auto_can method specified: $method\n"
+        if ref $method eq CODE;
+        
+    # avoid runaways
+    my $seen = { };
+    
+    $class->debug("installing AUTOLOAD and can() in $target") if DEBUG;
+
     $target->import_symbol( 
         can => sub {
             my ($this, $name, @args) = @_;
-            my $target;
+            $class->debug("looking to see if $this can $name()") if DEBUG;
+
+            # This avoids runaways where can() calls itself repeatedly, but 
+            # doesn't prevent can() from being called several times for the
+            # same item. 
+            return if $seen->{ $name };
+            local $seen->{ $name } = 1;
+
             return $this->SUPER::can($name)
                 || $this->$method($name, @args);
         }
@@ -169,12 +185,17 @@ sub auto_can {
             my ($name) = ($AUTOLOAD =~ /([^:]+)$/ );
             return if $name eq 'DESTROY';
             if (my $method = $this->can($name, @args)) {
+                $class->debug("installing $name method in $target ($class)") if DEBUG;
                 $target->method( $name => $method );
                 return $method->($this, @args);
             }
+
+            # Hmmm... what if $this isn't a subclass of Badger::Base?
             return $this->error_msg( bad_method => $name, ref $this, (caller())[1,2] );
         }
     );
+
+    $class->debug("installed AUTOLOAD and can() in $target") if DEBUG;
 }
 
 sub args {
@@ -492,7 +513,7 @@ an C<auto_can> method that will create methods on demand.
 
     use Badger::Class
         auto_can => 'can_view';
-
+        
     sub can_view {
         my ($self, $name) = @_;
         my $NAME = uc $name;
@@ -509,7 +530,7 @@ generator method to only creating methods that match a particular format.
 
     sub can_view {
         my ($self, $name) = @_;
-
+        
         # only create methods that are prefixed with 'view_'
         if ($name =~ s/^view_//) {
             my $NAME = uc $name;

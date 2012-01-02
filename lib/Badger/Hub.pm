@@ -19,7 +19,9 @@ use Badger::Class
     debug     => 0,
     base      => 'Badger::Prototype',
     import    => 'class',
+    auto_can  => 'auto_can',
     constants => 'HASH ARRAY REFS PKG',
+    utils     => 'blessed',
     words     => 'COMPONENTS DELEGATES COMP_CACHE DELG_CACHE',
     messages => {
         no_module  => 'No %s module defined.',
@@ -28,20 +30,9 @@ use Badger::Class
 
 use Badger::Config;
 our $CONFIG     = 'Badger::Config';
-our $COMPONENTS = {
-    pod        => 'Badger::Pod',
-    codecs     => 'Badger::Codecs',
-    filesystem => 'Badger::Filesystem',
-};
-our $DELEGATES  = { 
-    file      => 'filesystem',      # hub->file ==> hub->filesystem->file
-    directory => 'filesystem',
-    dir       => 'filesystem',
-    codec     => 'codecs',
-    pod       => 'pod',
-};
+our $COMPONENTS = { };
+our $DELEGATES  = { };
 our $LOADED     = { };
-our $AUTOLOAD;
 
 
 sub init {
@@ -68,124 +59,123 @@ sub init {
     return $self;
 }
 
+
 sub config {
     my $self = shift;
     $self = $self->prototype(@_) unless ref $self;
     return $self->{ config };
 }
 
+
 sub components {
     my $self  = shift;
     my $class = $self->class;
     my $comps = $class->var(COMP_CACHE) 
              || $class->var(COMP_CACHE => $class->hash_vars(COMPONENTS));
+
     if (@_) {
         my $args = ref $_[0] eq HASH ? shift : { @_ };
         @$comps{ keys %$args } = values %$args;
     }
+
     return $comps;
 }
 
+
 sub component {
-    my $self = shift;
-    my $name = shift;
-    $self->components->{ $name };
+    my $self  = shift;
+    my $comps = $self->components;
+    return @_
+        ? $comps->{ $_[0] }
+        : $comps;
 }
+
 
 sub delegates {
     my $self  = shift;
     my $class = $self->class;
     my $delgs = $class->var(DELG_CACHE) 
              || $class->var(DELG_CACHE => $class->hash_vars(DELEGATES));
+
     if (@_) {
         my $args = ref $_[0] eq HASH ? shift : { @_ };
         @$delgs{ keys %$args } = values %$args;
     }
+
     return $delgs;
 }
 
+
 sub delegate {
-    my ($self, $name) = @_;
-    $self->delegates->{ $name };
+    my $self   = shift;
+    my $delegs = $self->delegates;
+    return @_
+        ? $delegs->{ $_[0] }
+        : $delegs;
 }
 
-sub generate_component_method {
+
+sub auto_can {
+    my ($self, $name) = @_;
+    my $target;
+
+    if ($target = $self->component($name)) {
+        $self->debug("creating component method for $name")  if DEBUG;
+        return $self->auto_component( $name => $target );
+    }
+    elsif ($target = $self->delegate($name)) {
+        $self->debug("creating delegate method for $name") if DEBUG;
+        return $self->auto_delegate( $name => $target );
+    }
+    elsif (DEBUG) {
+        $self->debug("no component or delegate found for $name");
+    }
+        
+    return undef;
+}   
+
+
+sub auto_component {
     my ($self, $name, $comp) = @_;
     my $class = ref $self || $self;
-    no strict REFS;
 
     $LOADED->{ $name } ||= class($comp)->load;
 
-    unless (defined &{$class.PKG.$name}) {
-        $class->debug("generating $name() in $class\n") if DEBUG;
-        *{$class.PKG.$name} = sub {
-            my $self = shift;
-            my $args = @_ && ref $_[0] eq HASH ? shift : { @_ };
-            $self = $self->prototype() unless ref $self;
-            return $self->{ $name } 
-                ||= $self->configure( $name => { 
+    return sub {
+        my $self = shift;
+        my $args = @_ && ref $_[0] eq HASH ? shift : { @_ };
+        $self = $self->prototype unless ref $self;
+
+        return $self->{ $name } 
+            ||= $self->construct( 
+                $name => { 
                     # TODO: figure out what's going on here in terms of
                     # possible combinations of configuration options
                     %$args, 
                     hub    => $self, 
-                    module => $comp } 
-                );
-        };
+                    module => $comp 
+                } 
+            );
     }
 }
 
-sub generate_delegate_method {
+
+sub auto_delegate {
     my ($self, $name, $deleg) = @_;
     my $class = ref $self || $self;
-    no strict REFS;
     
     # foo => bar is mapped to $self->bar->foo
     # foo => [bar, baz] is mapped to $self->bar->baz
     my ($m1, $m2) = ref $deleg eq ARRAY ? @$deleg : ($deleg, $name);
 
-    unless (defined &{$class.PKG.$name}) {
-        $class->debug("generating $name() in $class\n") if DEBUG;
-        *{$class.PKG.$name} = sub {
-            shift->$m1->$m2(@_);
-        };
-    }
+    return $self->error("Cannot auto_delegate() a method to itself: $m1 -> $m2")
+        if $m1 eq $m2;
+
+    return sub {
+        shift->$m1->$m2(@_);
+    };
 }
 
-sub can {
-    my ($self, $name) = @_;
-    my $target;
-
-    if ($target = $self->SUPER::can($name)) {
-        return $target 
-    }
-    elsif ($target = $self->component($name)) {
-        return $self->generate_component_method( $name => $target );
-    }
-    elsif ($target = $self->delegate($name)) {
-        return $self->generate_delegate_method( $name => $target );
-    }
-    return undef;
-}   
-
-sub AUTOLOAD {
-    my ($self, @args) = @_;
-    my ($name) = ($AUTOLOAD =~ /([^:]+)$/ );
-    return if $name eq 'DESTROY';
-    my ($comp, $deleg);
-    
-    $self->debug("AUTOLOAD $name\n") if DEBUG;
-
-    # upgrade class methods to calls on prototype
-    $self = $self->prototype unless ref $self;
-    
-    # give the can() method a chance to generate a component or delegate
-    # method for us
-    if ($self->can($name)) {
-        return $self->$name(@args);
-    }
-
-    return $self->error_msg( bad_method => $name, ref $self, (caller())[1,2] );
-}
 
 
 # Configure and create a sub-component identified by $name, using
@@ -198,40 +188,43 @@ sub AUTOLOAD {
 # method to find $name (e.g. $hash->{ $name }, $object->$name, or
 # $class->name()).  This is merged with $params.
 
-sub configure {
+sub construct {
     my $self = shift;
     my $name = shift;
-    my $args = @_ && ref($_[0]) eq 'HASH' ? shift : { @_ };
+    my $args = @_ && ref($_[0]) eq HASH ? shift : { @_ };
 
-    $self->debug("configure($name)\n") if DEBUG;
+    $self->debug("construct($name)") if DEBUG;
     
     # $NAME pkg var can be a module name or hash ref with 'module' item
     my $pkgvar = $self->class->any_var(uc $name);
-    my $pkgmod = ref $pkgvar eq 'HASH' ? $pkgvar->{ module } : $pkgvar;
+    my $pkgmod = ref $pkgvar eq HASH ? $pkgvar->{ module } : $pkgvar;
     my $config = $self->{ config };
+    my $params;
     my $method;
 
-    if ($config && ref $config eq 'HASH') {
+    if ($config && ref $config eq HASH) {
         # $self->{ config } can be a hash ref with a $name item
-        $config = $config->{ $name };
+        $params = $config->{ $name };
     }
-#    elsif ($config && ($method = UNIVERSAL::can($self->{ config }, $name))) {
-    elsif ($config && ($method = $self->{ config }->can($name))) {
+    elsif (blessed $config && ($method = $self->{ config }->can($name))) {
         # $self->{ config } can be an object with a $name method which we call
-        $config = $method->($config);
+        $params = $method->($config);
     }
     else {
         # no local config data so we'll fall back on a package variable
-        $config = $pkgvar;
+        $params = $pkgvar;
     }
+    
+    # if $params isn't defined then we default to the entire $config hash
+    $params ||= $config;
 
     # if $config isn't a hash then it's the name of the module to use
-    $config = { module => $config } unless ref $config eq 'HASH';
+    $params = { module => $params } unless ref $params eq HASH;
 
     $self->debug("$name module config: ", $self->dump_data($config)) if DEBUG;
     
     # see if a module name is specified in $args, config hash or use $pkgmod
-    my $module = $args->{ module } ||= $config->{ module } ||= $pkgmod
+    my $module = $args->{ module } ||= $params->{ module } ||= $pkgmod
         || return $self->error_msg( no_module => $name );
 
     $self->debug("$name module: $module") if DEBUG;
@@ -240,11 +233,11 @@ sub configure {
     class($module)->load;
 
     # add any extra arguments to the config hash
-    $config = { %$config, %$args } if %$args;
+    $params = { %$params, %$args } if %$args;
 
-    $self->debug("$name merged config: ", $self->dump_data($config)) if DEBUG;
+    $self->debug("$name merged config: ", $self->dump_data($params)) if DEBUG;
 
-    return $module->new($config);
+    return $module->new($params);
 }
 
 
@@ -274,9 +267,10 @@ sub destroy {
     %$self = ();
 }
 
+
 sub DESTROY {
     my $self = shift;
-    $self->destroy();
+    $self->destroy;
 }
 
 
@@ -493,15 +487,6 @@ This method returns a single entry from the delegates table.
 
     print $hub->delegate('warm_fuzz');  # fuzzbox
 
-=head2 can()
-
-The method re-defines the C<can()> method that would otherwise be inherited
-from the L<UNIVERSAL> module.  In addition to returning references to methods
-already defined in the hub class, it will also create methods on demand that
-either creates a component (if the method has an entry in L<$COMPONENTS>) 
-or delegates to another method (if the method has an entry in L<$DELEGATES>).
-If none of the above apply then the C<can()> method returns C<undef>.
-
 =head2 destroy()
 
 This method can be manually called to destroy the hub and any components
@@ -509,7 +494,7 @@ that it is using.
 
 =head1 INTERNAL METHODS
 
-=head2 configure($component,\%params)
+=head2 construct($component,\%params)
 
 This method configures and instantiates a component. The first argument is the
 component name. This is mapped to a module via the L<component()> method and
@@ -518,19 +503,27 @@ array of named paramters may follow. A reference to the hub is added to these
 as the C<hub> item before forwarding them to the constructor method for the
 component.  The component is then cached for subsequent use.
 
-    # calling the configure() method like this...
-    $hub->configure( fuzzbox => { volume => 11 } );
+    # calling the construct() method like this...
+    $hub->construct( fuzzbox => { volume => 11 } );
 
     # ...results in code equivalent to this:
     use Your::Module::Fuzzbox;
     Your::Module::Fuzzbox->new({ volume => 11, hub => $hub });
 
-=head2 generate_component_method($name,$module)
+=head2 auto_can($name)
+
+This method is installed as an L<auto_can|Badger::Class/auto_can> handler
+which is called to resolved undefined methods.  If the method called matches
+the name of a component then it calls L<auto_component()> to generate a 
+method to access the component.  If it matches the name of a delegate method
+then it calls L<auto_delegate()> to generate a delegate method.
+
+=head2 auto_component($name,$module)
 
 This method generates a component method named C<$name> which accesses an
 instance of the C<$module> component module.
 
-=head2 generate_delegate_method($name,$component)
+=head2 auto_delegate($name,$component)
 
 This method generates a delegate method named C<$name> which delegates to
 the C<$name> method of the C<$component> component.
