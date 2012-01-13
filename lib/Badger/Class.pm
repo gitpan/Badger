@@ -1953,19 +1953,17 @@ subroutines or methods into a class.
             bar => \&Some::Other::Method,
         };
 
-See the L<methods> method for further details.
-
 =head2 alias
 
 This can be used to define aliases to existing methods.
 
     use Badger::Class
-        methods => {
+        alias => {
             foo => \&bar,
             baz => 'bam',
         };
 
-See the L<methods> method for further details.
+See the L<alias()> method for further details.
 
 =head2 slots
 
@@ -1974,7 +1972,7 @@ This can be used to define methods for list-based objects.
     use Badger::Class
         slots => 'size colour object';
     
-See the L<slots> method for further details.
+See the L<slots()> method for further details.
 
 =head2 accessors / get_methods
 
